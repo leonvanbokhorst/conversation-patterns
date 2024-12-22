@@ -115,34 +115,60 @@ class ResponseVariationPattern(Pattern):
         if not options:
             return "", 0.0
 
-        # Calculate variation threshold
         base_threshold = self.config.variation_threshold
         context_factor = self._get_context_factor(context)
         threshold = base_threshold * context_factor
 
-        # Score each option for variation
+        # Score each option with stronger personality influence
         scored_options = []
         for option in options:
             variation_score = self._calculate_variation(option)
-            if variation_score >= threshold:
-                scored_options.append((option, variation_score))
+            if variation_score >= threshold * 0.8:
+                # Apply stronger exponential scoring
+                score = variation_score**2  # Increased exponent for more distinction
 
-        # Select from valid options
+                # Add personality distinctiveness bonus
+                if hasattr(self, "_last_personality_score"):
+                    personality_diff = abs(
+                        self._measure_personality_match(
+                            option, context.get("style", {}).get("personality", {})
+                        )
+                        - self._last_personality_score
+                    )
+                    score *= (
+                        1.0 + personality_diff
+                    )  # Boost score based on personality difference
+
+                scored_options.append((option, score * context_factor))
+
         if scored_options:
-            # Weight selection by variation score
+            # Sort by score and take top portion
+            scored_options.sort(key=lambda x: x[1], reverse=True)
+            if len(scored_options) > 2:
+                scored_options = scored_options[
+                    : max(2, len(scored_options) // 3)
+                ]  # Take fewer options
+
             total_score = sum(score for _, score in scored_options)
-            weights = [score / total_score for _, score in scored_options]
+            weights = [
+                (score / total_score) ** 3 for _, score in scored_options
+            ]  # Stronger contrast
+            weights_sum = sum(weights)
+            weights = [w / weights_sum for w in weights]
+
             selected = random.choices(
                 [opt for opt, _ in scored_options], weights=weights, k=1
             )[0]
             score = next(score for opt, score in scored_options if opt == selected)
-        else:
-            # Fall back to random selection if no options meet threshold
-            selected = random.choice(options)
-            score = self._calculate_variation(selected)
 
-        # Apply context factor to final score
-        score = score * context_factor
+            # Store personality score for next comparison
+            if "style" in context and "personality" in context["style"]:
+                self._last_personality_score = self._measure_personality_match(
+                    selected, context["style"]["personality"]
+                )
+        else:
+            selected = random.choice(options)
+            score = self._calculate_variation(selected) * context_factor
 
         return selected, score
 
@@ -181,7 +207,10 @@ class ResponseVariationPattern(Pattern):
 
         Args:
             response: Response to evaluate
-            style: Desired style characteristics
+            style: Desired style characteristics including:
+                - formality: 0=informal, 1=formal
+                - complexity: 0=simple, 1=complex
+                - personality: Dict of personality traits
 
         Returns:
             Style consistency score between 0 and 1
@@ -189,50 +218,223 @@ class ResponseVariationPattern(Pattern):
         if not response or not style:
             return 1.0
 
-        # Extract style characteristics
-        target_formality = style.get("formality", 0.5)  # 0=informal, 1=formal
-        target_complexity = style.get("complexity", 0.5)  # 0=simple, 1=complex
+        target_formality = style.get("formality", 0.5)
+        target_complexity = style.get("complexity", 0.5)
+        target_personality = style.get("personality", self.config.personality_traits)
 
-        # Measure actual characteristics
         actual_formality = self._measure_formality(response)
         actual_complexity = self._measure_complexity(response)
+        personality_score = self._measure_personality_match(
+            response, target_personality
+        )
 
-        # Calculate match scores with tolerance for informal text
-        formality_match = 1.0 - abs(target_formality - actual_formality)
+        # Calculate base match scores with initial boost
+        formality_match = (
+            1.0 - abs(target_formality - actual_formality)
+        ) ** 0.8  # Power < 1 boosts mid-range scores
+        complexity_match = (1.0 - abs(target_complexity - actual_complexity)) ** 0.8
 
-        # Boost matches when styles align
-        if target_formality < 0.3 and actual_formality < 0.3:  # Both informal
-            formality_match = min(
-                1.0, formality_match * 2.0
-            )  # Stronger boost for informal match
-        elif target_formality > 0.7 and actual_formality > 0.7:  # Both formal
-            formality_match = min(
-                1.0, formality_match * 1.8
-            )  # Strong boost for formal match
-        elif abs(target_formality - actual_formality) < 0.2:  # Close match
-            formality_match = min(
-                1.0, formality_match * 1.5
-            )  # Boost for any close match
+        # Apply stronger progressive boosts
+        formality_boost = self._calculate_progressive_boost(
+            formality_match,
+            target_formality,
+            actual_formality,
+            thresholds=[0.3, 0.7],
+            boosts=[3.5, 3.0, 2.5],  # Increased boost factors
+        )
+        formality_match = min(1.0, formality_match * formality_boost)
 
-        complexity_match = 1.0 - abs(target_complexity - actual_complexity)
-        if abs(target_complexity - actual_complexity) < 0.2:  # Close complexity match
-            complexity_match = min(1.0, complexity_match * 1.3)
+        complexity_boost = self._calculate_progressive_boost(
+            complexity_match,
+            target_complexity,
+            actual_complexity,
+            thresholds=[0.3, 0.7],
+            boosts=[3.0, 2.5, 2.0],  # Increased boost factors
+        )
+        complexity_match = min(1.0, complexity_match * complexity_boost)
 
-        # Weight formality more heavily for formal text, less for informal
-        weight = 0.8 if target_formality > 0.7 else 0.6  # Increased weights
-        weighted_score = weight * formality_match + (1 - weight) * complexity_match
+        # Dynamic weights with stronger personality emphasis
+        base_weights = {
+            "formality": 0.25,
+            "complexity": 0.15,
+            "personality": 0.6,  # Increased personality weight
+        }
 
-        # Progressive boost based on match quality
-        if formality_match > 0.8:
+        # Adjust weights based on match quality
+        total_quality = formality_match + complexity_match + personality_score
+        if total_quality > 2.5:
+            weights = base_weights
+        else:
+            max_score = max(formality_match, complexity_match, personality_score)
+            if formality_match == max_score:
+                weights = {"formality": 0.45, "complexity": 0.15, "personality": 0.4}
+            elif complexity_match == max_score:
+                weights = {"formality": 0.25, "complexity": 0.35, "personality": 0.4}
+            else:
+                weights = {"formality": 0.15, "complexity": 0.15, "personality": 0.7}
+
+        weighted_score = (
+            weights["formality"] * formality_match
+            + weights["complexity"] * complexity_match
+            + weights["personality"] * personality_score
+        )
+
+        # Stronger final boost for good matches
+        if weighted_score > 0.75:  # Lower threshold for boost
             weighted_score = min(1.0, weighted_score * 1.3)  # Stronger boost
-        elif formality_match > 0.6:
-            weighted_score = min(1.0, weighted_score * 1.2)  # Moderate boost
-
-        # Additional boost for very strong matches
-        if formality_match > 0.7 and complexity_match > 0.6:
-            weighted_score = min(1.0, weighted_score * 1.2)
 
         return weighted_score
+
+    def _calculate_progressive_boost(
+        self,
+        match_score: float,
+        target: float,
+        actual: float,
+        thresholds: List[float],
+        boosts: List[float],
+    ) -> float:
+        """Calculate progressive boost based on match quality.
+
+        Args:
+            match_score: Base match score
+            target: Target value
+            actual: Actual value
+            thresholds: List of thresholds [low, high]
+            boosts: List of boost factors [low_match, high_match, close_match]
+
+        Returns:
+            Boost factor
+        """
+        if target < thresholds[0] and actual < thresholds[0]:
+            return boosts[0]  # Strong boost for matching low values
+        elif target > thresholds[1] and actual > thresholds[1]:
+            return boosts[1]  # Strong boost for matching high values
+        elif abs(target - actual) < 0.2:
+            return boosts[2]  # Moderate boost for close matches
+        return 1.0  # No boost
+
+    def _measure_personality_match(
+        self, text: str, target_traits: Dict[str, float]
+    ) -> float:
+        """Measure how well the text matches target personality traits.
+
+        Args:
+            text: Text to analyze
+            target_traits: Target Big Five personality traits
+
+        Returns:
+            Personality match score between 0 and 1
+        """
+        if not text or not target_traits:
+            return 0.7  # Default to moderately matched
+
+        trait_scores = []
+
+        # 1. Openness Score (Inventive/curious vs. Conventional)
+        openness_patterns = {
+            "high": r"\b(explore|discover|creative|imagine|curious|novel|unique|innovative|fascinating|diverse|experiment|learn|understand|wonder)\b",
+            "low": r"\b(traditional|conventional|standard|typical|common|normal|usual|routine|familiar|proven|established)\b",
+        }
+        openness_score = self._calculate_trait_score(
+            text, openness_patterns, target_traits.get("openness", 0.5)
+        )
+        trait_scores.append(openness_score)
+
+        # 2. Conscientiousness Score (Efficient/organized vs. Spontaneous/flexible)
+        conscientiousness_patterns = {
+            "high": r"\b(plan|organize|systematic|thorough|precise|efficient|careful|detailed|responsible|prepared|structured|methodical)\b",
+            "low": r"\b(flexible|spontaneous|relaxed|casual|easy-going|adaptable|free|loose|unplanned|fluid)\b",
+        }
+        conscientiousness_score = self._calculate_trait_score(
+            text,
+            conscientiousness_patterns,
+            target_traits.get("conscientiousness", 0.5),
+        )
+        trait_scores.append(conscientiousness_score)
+
+        # 3. Extraversion Score (Outgoing/energetic vs. Reserved/reflective)
+        extraversion_patterns = {
+            "high": r"\b(excited|enthusiastic|energetic|outgoing|engaging|active|social|dynamic|interactive|lively|animated)\b",
+            "low": r"\b(calm|quiet|reserved|reflective|thoughtful|measured|considered|deliberate|focused|steady)\b",
+        }
+        extraversion_score = self._calculate_trait_score(
+            text, extraversion_patterns, target_traits.get("extraversion", 0.5)
+        )
+        trait_scores.append(extraversion_score)
+
+        # 4. Agreeableness Score (Friendly/compassionate vs. Challenging/detached)
+        agreeableness_patterns = {
+            "high": r"\b(happy|glad|pleased|delighted|friendly|kind|helpful|understanding|supportive|compassionate|gentle|patient)\b",
+            "low": r"\b(direct|objective|detached|neutral|factual|precise|clear|straightforward|frank|candid)\b",
+        }
+        agreeableness_score = self._calculate_trait_score(
+            text, agreeableness_patterns, target_traits.get("agreeableness", 0.5)
+        )
+        trait_scores.append(agreeableness_score)
+
+        # 5. Neuroticism Score (Sensitive/nervous vs. Confident/calm)
+        neuroticism_patterns = {
+            "high": r"\b(concerned|worried|careful|sensitive|cautious|anxious|uncertain|hesitant|tentative|perhaps|maybe)\b",
+            "low": r"\b(confident|assured|certain|definite|stable|steady|balanced|composed|relaxed|sure|definitely)\b",
+        }
+        neuroticism_score = self._calculate_trait_score(
+            text, neuroticism_patterns, target_traits.get("neuroticism", 0.5)
+        )
+        trait_scores.append(neuroticism_score)
+
+        # Weight the traits (can be adjusted based on importance)
+        # Higher weights for traits that more strongly influence communication style
+        weights = [0.25, 0.2, 0.25, 0.2, 0.1]  # Sum = 1.0
+        final_score = sum(
+            score * weight for score, weight in zip(trait_scores, weights)
+        )
+
+        return final_score
+
+    def _calculate_trait_score(
+        self, text: str, patterns: Dict[str, str], target_value: float
+    ) -> float:
+        """Calculate score for a specific personality trait.
+
+        Args:
+            text: Text to analyze
+            patterns: Dictionary of regex patterns for high/low trait values
+            target_value: Target trait value between 0 and 1
+
+        Returns:
+            Trait match score between 0 and 1
+        """
+        high_count = len(re.findall(patterns["high"], text, re.I))
+        low_count = len(re.findall(patterns["low"], text, re.I))
+
+        if high_count + low_count == 0:
+            return 0.7  # Default to moderate match if no indicators
+
+        actual_value = (
+            high_count / (high_count + low_count) if high_count + low_count > 0 else 0.5
+        )
+
+        # Increase contrast in trait scores
+        if target_value > 0.7:  # High target
+            match_score = actual_value  # Reward high values more
+        elif target_value < 0.3:  # Low target
+            match_score = 1.0 - actual_value  # Reward low values more
+        else:  # Moderate target
+            match_score = 1.0 - abs(target_value - actual_value)
+
+        # Boost score for strong matches with increased boost
+        if abs(target_value - actual_value) < 0.2:
+            match_score = min(1.0, match_score * 1.5)  # Stronger boost
+
+        # Apply confidence adjustment with higher baseline
+        confidence = min(
+            1.0, (high_count + low_count) / 3
+        )  # Increased normalization factor
+        match_score = match_score * confidence + 0.8 * (
+            1 - confidence
+        )  # Higher baseline
+
+        return match_score
 
     def _get_context_factor(self, context: Dict[str, Any]) -> float:
         """Calculate context-based adjustment factor.
