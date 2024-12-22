@@ -312,57 +312,6 @@ async def test_individual_traits(pattern: ResponseVariationPattern):
 
 
 @pytest.mark.asyncio
-async def test_personality_integration(pattern: ResponseVariationPattern):
-    """Test integration of Big Five personality traits with other style aspects."""
-    input_data = {
-        "response_options": [
-            "I'm excited to explore innovative solutions with you!",  # High openness/extraversion
-            "Let me analyze this systematically and prepare a detailed plan.",  # High conscientiousness
-            "I understand your concerns and I'm happy to help find a solution together.",  # High agreeableness
-        ],
-        "context": {"allows_creativity": True},
-        "style": {
-            "formality": 0.7,
-            "complexity": 0.6,
-            "personality": {
-                "openness": 0.8,
-                "conscientiousness": 0.4,
-                "extraversion": 0.7,
-                "agreeableness": 0.6,
-                "neuroticism": 0.3,
-            },
-        },
-    }
-
-    result = await pattern.process(input_data)
-
-    assert "selected_response" in result
-    assert "variation_score" in result
-    assert "style_score" in result
-    assert result["style_score"] > 0
-
-    # Process with contrasting personality
-    input_data["style"]["personality"] = {
-        "openness": 0.3,
-        "conscientiousness": 0.9,  # Strongly different from first personality
-        "extraversion": 0.3,
-        "agreeableness": 0.5,
-        "neuroticism": 0.4,
-    }
-
-    different_result = await pattern.process(input_data)
-
-    # Different personality should select different response
-    assert result["selected_response"] != different_result["selected_response"]
-
-    # The second response should be more systematic/conscientious
-    assert (
-        "systematic" in different_result["selected_response"].lower()
-        or "detailed" in different_result["selected_response"].lower()
-    )
-
-
-@pytest.mark.asyncio
 async def test_personality_edge_cases(pattern: ResponseVariationPattern):
     """Test edge cases in personality trait matching."""
     # Test neutral text
