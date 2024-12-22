@@ -181,3 +181,221 @@ async def test_reset_functionality(pattern: ResponseVariationPattern):
     assert pattern.state.turn_count == 0
     assert pattern.state.last_utterance is None
     assert pattern.state.context == {}
+
+
+@pytest.mark.asyncio
+async def test_personality_matching(pattern: ResponseVariationPattern):
+    """Test Big Five personality trait matching."""
+    # Test high openness and extraversion
+    open_extraverted = (
+        "I'm excited to explore innovative solutions with you! Let's discover new "
+        "approaches together and experiment with unique ideas."
+    )
+    open_extraverted_style = {
+        "personality": {
+            "openness": 0.8,
+            "conscientiousness": 0.5,
+            "extraversion": 0.8,
+            "agreeableness": 0.5,
+            "neuroticism": 0.3,
+        }
+    }
+    open_extraverted_score = pattern._calculate_style_score(
+        open_extraverted, open_extraverted_style
+    )
+
+    # Test high conscientiousness and low neuroticism
+    conscientious_stable = (
+        "I will systematically analyze the requirements and prepare a detailed, "
+        "structured plan. You can be confident in our methodical approach."
+    )
+    conscientious_stable_style = {
+        "personality": {
+            "openness": 0.5,
+            "conscientiousness": 0.8,
+            "extraversion": 0.5,
+            "agreeableness": 0.5,
+            "neuroticism": 0.2,
+        }
+    }
+    conscientious_stable_score = pattern._calculate_style_score(
+        conscientious_stable, conscientious_stable_style
+    )
+
+    # Test high agreeableness and moderate neuroticism
+    agreeable_moderate = (
+        "I understand your concerns and I'm happy to help find a gentle solution. "
+        "Let's work together supportively to address any uncertainties."
+    )
+    agreeable_moderate_style = {
+        "personality": {
+            "openness": 0.5,
+            "conscientiousness": 0.5,
+            "extraversion": 0.5,
+            "agreeableness": 0.8,
+            "neuroticism": 0.5,
+        }
+    }
+    agreeable_moderate_score = pattern._calculate_style_score(
+        agreeable_moderate, agreeable_moderate_style
+    )
+
+    # Verify scores
+    assert open_extraverted_score > 0.7
+    assert conscientious_stable_score > 0.7
+    assert agreeable_moderate_score > 0.7
+
+    # Test trait consistency
+    assert pattern._measure_personality_match(
+        open_extraverted, {"openness": 0.8, "extraversion": 0.8}
+    ) > pattern._measure_personality_match(
+        open_extraverted, {"openness": 0.2, "extraversion": 0.2}
+    )
+
+
+@pytest.mark.asyncio
+async def test_individual_traits(pattern: ResponseVariationPattern):
+    """Test individual Big Five trait calculations."""
+    # Test openness
+    high_openness = "Let's explore innovative and creative approaches to understand this fascinating challenge."
+    low_openness = (
+        "We'll stick to our proven, conventional methods that are well-established."
+    )
+
+    # Test conscientiousness
+    high_conscientiousness = (
+        "I'll prepare a detailed, systematic plan with thorough documentation."
+    )
+    low_conscientiousness = "Let's keep it flexible and adaptable, going with the flow."
+
+    # Test extraversion
+    high_extraversion = (
+        "I'm excited to engage in this dynamic, interactive session with you!"
+    )
+    low_extraversion = "I'll quietly reflect on this and provide a measured response."
+
+    # Test agreeableness
+    high_agreeableness = (
+        "I'm happy to help and will be patient and supportive throughout the process."
+    )
+    low_agreeableness = "Here are the objective facts and straightforward analysis."
+
+    # Test neuroticism
+    high_neuroticism = (
+        "I'm a bit worried about potential issues, so let's proceed carefully."
+    )
+    low_neuroticism = (
+        "I'm confident we can handle this with a steady, balanced approach."
+    )
+
+    # Test each dimension
+    traits_to_test = [
+        ("openness", high_openness, low_openness),
+        ("conscientiousness", high_conscientiousness, low_conscientiousness),
+        ("extraversion", high_extraversion, low_extraversion),
+        ("agreeableness", high_agreeableness, low_agreeableness),
+        ("neuroticism", high_neuroticism, low_neuroticism),
+    ]
+
+    for trait, high_text, low_text in traits_to_test:
+        # Test high value of trait
+        high_score = pattern._calculate_style_score(
+            high_text, {"personality": {trait: 0.8}}
+        )
+        # Test low value of trait
+        low_score = pattern._calculate_style_score(
+            low_text, {"personality": {trait: 0.2}}
+        )
+
+        assert high_score > 0.6
+        assert low_score > 0.6
+
+
+@pytest.mark.asyncio
+async def test_personality_integration(pattern: ResponseVariationPattern):
+    """Test integration of Big Five personality traits with other style aspects."""
+    input_data = {
+        "response_options": [
+            "I'm excited to explore innovative solutions with you!",  # High openness/extraversion
+            "Let me analyze this systematically and prepare a detailed plan.",  # High conscientiousness
+            "I understand your concerns and I'm happy to help find a solution together.",  # High agreeableness
+        ],
+        "context": {"allows_creativity": True},
+        "style": {
+            "formality": 0.7,
+            "complexity": 0.6,
+            "personality": {
+                "openness": 0.8,
+                "conscientiousness": 0.4,
+                "extraversion": 0.7,
+                "agreeableness": 0.6,
+                "neuroticism": 0.3,
+            },
+        },
+    }
+
+    result = await pattern.process(input_data)
+
+    assert "selected_response" in result
+    assert "variation_score" in result
+    assert "style_score" in result
+    assert result["style_score"] > 0
+
+    # Process with contrasting personality
+    input_data["style"]["personality"] = {
+        "openness": 0.3,
+        "conscientiousness": 0.9,  # Strongly different from first personality
+        "extraversion": 0.3,
+        "agreeableness": 0.5,
+        "neuroticism": 0.4,
+    }
+
+    different_result = await pattern.process(input_data)
+
+    # Different personality should select different response
+    assert result["selected_response"] != different_result["selected_response"]
+
+    # The second response should be more systematic/conscientious
+    assert (
+        "systematic" in different_result["selected_response"].lower()
+        or "detailed" in different_result["selected_response"].lower()
+    )
+
+
+@pytest.mark.asyncio
+async def test_personality_edge_cases(pattern: ResponseVariationPattern):
+    """Test edge cases in personality trait matching."""
+    # Test neutral text
+    neutral_text = "This is a simple statement without personality indicators."
+    neutral_style = {
+        "personality": {
+            "openness": 0.5,
+            "conscientiousness": 0.5,
+            "extraversion": 0.5,
+            "agreeableness": 0.5,
+            "neuroticism": 0.5,
+        }
+    }
+    neutral_score = pattern._calculate_style_score(neutral_text, neutral_style)
+    assert 0.4 <= neutral_score <= 0.8  # Should be moderate
+
+    # Test mixed traits
+    mixed_text = (
+        "While I'm excited to explore new ideas, let's proceed carefully "
+        "with a structured plan to address any concerns systematically."
+    )
+    mixed_style = {
+        "personality": {
+            "openness": 0.7,
+            "conscientiousness": 0.8,
+            "extraversion": 0.6,
+            "agreeableness": 0.5,
+            "neuroticism": 0.6,
+        }
+    }
+    mixed_score = pattern._calculate_style_score(mixed_text, mixed_style)
+    assert mixed_score > 0.6  # Should handle mixed traits well
+
+    # Test empty text
+    empty_score = pattern._calculate_style_score("", neutral_style)
+    assert empty_score == 1.0  # Should return default score

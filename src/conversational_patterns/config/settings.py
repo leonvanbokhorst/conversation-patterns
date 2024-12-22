@@ -47,6 +47,16 @@ class ResponseConfig(BaseModel):
     context_adaptation_rate: float = Field(
         0.3, description="Rate of adaptation to context"
     )
+    personality_traits: Dict[str, float] = Field(
+        default_factory=lambda: {
+            "openness": 0.5,  # 0=conventional, 1=inventive/curious
+            "conscientiousness": 0.5,  # 0=spontaneous/flexible, 1=organized/efficient
+            "extraversion": 0.5,  # 0=reserved/reflective, 1=outgoing/energetic
+            "agreeableness": 0.5,  # 0=challenging/detached, 1=friendly/compassionate
+            "neuroticism": 0.5,  # 0=confident/calm, 1=sensitive/nervous
+        },
+        description="Big Five personality traits configuration",
+    )
 
 
 class RepairConfig(BaseModel):
