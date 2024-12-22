@@ -1,5 +1,7 @@
 # Conversational Patterns Research
 
+[![Test](https://github.com/leonvanbokhorst/conversational-patts/actions/workflows/test.yml/badge.svg)](https://github.com/leonvanbokhorst/conversational-patts/actions/workflows/test.yml)
+
 Implementation of human-like conversational patterns for Virtual Humans, focusing on turn-taking, context awareness, response variation, and repair strategies.
 
 ## Project Overview
