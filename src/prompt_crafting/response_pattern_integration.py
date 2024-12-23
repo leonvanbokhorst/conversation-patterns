@@ -126,7 +126,6 @@ class ConversationalPattern:
     def _fill_template(self, template: str, context: str) -> str:
         """Fill template with actual content based on context."""
         # This would be more sophisticated in a real implementation
-        # Just a simple example here
         return template.format(
             topic=self.state.current_topic,
             prev_point="previous point",
@@ -135,6 +134,7 @@ class ConversationalPattern:
             perspective="interesting perspective",
             points="main points",
             new_direction="new direction",
+            new_aspect="new aspect",
             interpretation="interpretation",
             summary="summary",
         )
