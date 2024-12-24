@@ -105,10 +105,7 @@ class ConversationalPattern:
         # Select template based on turn type and fill with context
         template = random.choice(templates[turn_type])
 
-        # Fill template with actual content (simplified here)
-        response = self._fill_template(template, user_input)
-
-        return response
+        return self._fill_template(template, user_input)
 
     def _should_ask_question(self) -> bool:
         """Determine if this turn should end with a question."""
