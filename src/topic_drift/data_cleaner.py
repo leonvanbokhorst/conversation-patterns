@@ -127,10 +127,10 @@ def deduplicate_conversations(
         else:
             # Track duplicate type
             num_turns = len(conv["turns"])
-            if is_id_duplicate:
-                duplicates[num_turns]["id"] += 1
-            if is_content_duplicate:
-                duplicates[num_turns]["content"] += 1
+        if is_id_duplicate:
+            duplicates[num_turns]["id"] += 1
+        if is_content_duplicate:
+            duplicates[num_turns]["content"] += 1
 
     cleaned_data = ConversationData(conversations=unique_conversations)
     after_stats = analyze_conversations(cleaned_data.conversations)
