@@ -1,11 +1,8 @@
 import torch
 import numpy as np
 from sklearn.metrics.pairwise import cosine_similarity
-from ollama import Client
 import json
-import pickle
 from pathlib import Path
-from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple
 from huggingface_hub import HfApi, Repository
 import tempfile
@@ -13,40 +10,13 @@ import os
 from dotenv import load_dotenv
 from uuid import uuid4
 from tqdm.auto import tqdm
+from topic_drift.data_types import ConversationData
+from topic_drift.llm_wrapper import OllamaWrapper
 
 # Load environment variables from .env file
 load_dotenv()
 
-NUM_CONVERSATIONS = 500
-
-
-@dataclass
-class ConversationData:
-    """Container for raw conversation data."""
-
-    conversations: List[Dict[str, any]]  # List of conversations with their turns
-
-
-class OllamaWrapper:
-    def __init__(self, chat_model: str = "llama3.2", embedding_model: str = "bge-m3"):
-        """Initialize Ollama client with specified models."""
-        self.client = Client()
-        self.chat_model = chat_model
-        self.embedding_model = embedding_model
-
-    def generate_text(self, prompt: str) -> str:
-        """Generate text using Ollama chat model."""
-        response = self.client.chat(
-            model=self.chat_model,
-            messages=[{"role": "user", "content": prompt}],
-            options={"temperature": 0.7},
-        )
-        return response["message"]["content"]
-
-    def get_embeddings(self, text: str) -> np.ndarray:
-        """Get embeddings using Ollama embedding model."""
-        response = self.client.embeddings(model=self.embedding_model, prompt=text)
-        return np.array(response["embedding"])
+NUM_CONVERSATIONS = 0
 
 
 def generate_conversation(ollama: OllamaWrapper) -> List[str]:
@@ -82,18 +52,6 @@ def save_conversation_data(data: ConversationData, base_path: str = "data") -> N
             f.write("\n")
 
 
-def load_conversation_data(base_path: str = "data") -> Optional[ConversationData]:
-    """Load conversation data from flat format."""
-    base_path = Path(base_path)
-    if not (base_path / "conversations.jsonl").exists():
-        return None
-
-    conversations = []
-    with open(base_path / "conversations.jsonl", "r") as f:
-        conversations.extend(json.loads(line) for line in f)
-    return ConversationData(conversations=conversations)
-
-
 def sync_with_huggingface(
     data: Optional[ConversationData] = None,
     repo_id: str = "leonvanbokhorst/topic-drift",
@@ -119,29 +77,6 @@ def sync_with_huggingface(
 
     # Create temp directory for file operations
     with tempfile.TemporaryDirectory() as tmp_dir:
-        if mode in ["download", "auto"]:
-            try:
-                api.snapshot_download(
-                    repo_id=repo_id,
-                    repo_type="dataset",
-                    local_dir=tmp_dir,
-                    token=token,
-                    ignore_patterns=[".*"],
-                )
-                loaded_data = load_conversation_data(tmp_dir)
-                if loaded_data is not None:
-                    print(f"Successfully loaded data from {repo_id}")
-                    return loaded_data
-                elif mode == "download":
-                    print(f"No data found in {repo_id}")
-                    return None
-            except Exception as e:
-                if mode == "download":
-                    raise Exception(
-                        f"Failed to download from {repo_id}: {str(e)}"
-                    ) from e
-                print(f"No existing data found in {repo_id}, proceeding with upload")
-
         if mode in ["upload", "auto"] and data is not None:
             try:
                 repo = Repository(
@@ -161,30 +96,6 @@ def sync_with_huggingface(
     return None
 
 
-def calculate_conversation_metrics(turns: List[str]) -> Dict[str, float]:
-    """Calculate various metrics for a conversation."""
-    # Basic length metrics
-    turn_lengths = [len(turn.split()) for turn in turns]
-    char_lengths = [len(turn) for turn in turns]
-
-    return {
-        "num_turns": len(turns),
-        "avg_turn_length": sum(turn_lengths) / len(turns),
-        "total_turn_length": sum(turn_lengths),
-        "min_turn_length": min(turn_lengths),
-        "max_turn_length": max(turn_lengths),
-        "turn_length_variance": np.var(turn_lengths),
-        "avg_chars_per_turn": sum(char_lengths) / len(turns),
-        "avg_word_length": sum(char_lengths) / sum(turn_lengths),
-        "question_ratio": (sum("?" in turn for turn in turns) / len(turns)),
-        "exclamation_ratio": (sum("!" in turn for turn in turns) / len(turns)),
-        "capitalization_ratio": sum(
-            sum(bool(c.isupper()) for c in turn) / len(turn) for turn in turns
-        )
-        / len(turns),
-    }
-
-
 def generate_synthetic_data(
     num_conversations: int = NUM_CONVERSATIONS,
     chat_model: str = "qwen2.5-coder:32b",
@@ -193,30 +104,10 @@ def generate_synthetic_data(
     save_interval: int = 50,
 ) -> ConversationData:
     """Generate synthetic conversation data without drift labels."""
-    # Try to load existing data
-    existing_conversations = []
-    if hf_repo:
-        loaded_data = sync_with_huggingface(repo_id=hf_repo, mode="download")
-        if loaded_data is not None:
-            existing_conversations = loaded_data.conversations
-            print(f"Loaded {len(existing_conversations)} existing conversations")
-    elif save_path:
-        loaded_data = load_conversation_data(save_path)
-        if loaded_data is not None:
-            existing_conversations = loaded_data.conversations
-            print(f"Loaded {len(existing_conversations)} existing conversations")
-
-    # If num_conversations is 0, just return existing data
-    if num_conversations == 0:
-        if not existing_conversations:
-            print("No existing conversations found")
-            return ConversationData(conversations=[])
-        return ConversationData(conversations=existing_conversations)
-
     print("Initializing Ollama client...")
     ollama = OllamaWrapper(chat_model=chat_model)
 
-    conversations = existing_conversations.copy()  # Start with existing conversations
+    conversations = []
     print(f"Generating {num_conversations} new conversations...")
     for i in tqdm(range(num_conversations)):
         conversation_id = str(uuid4())
@@ -253,3 +144,27 @@ def generate_synthetic_data(
         sync_with_huggingface(data, repo_id=hf_repo, mode="upload")
 
     return data
+
+
+def calculate_conversation_metrics(turns: List[str]) -> Dict[str, float]:
+    """Calculate various metrics for a conversation."""
+    # Basic length metrics
+    turn_lengths = [len(turn.split()) for turn in turns]
+    char_lengths = [len(turn) for turn in turns]
+
+    return {
+        "num_turns": len(turns),
+        "avg_turn_length": sum(turn_lengths) / len(turns),
+        "total_turn_length": sum(turn_lengths),
+        "min_turn_length": min(turn_lengths),
+        "max_turn_length": max(turn_lengths),
+        "turn_length_variance": np.var(turn_lengths),
+        "avg_chars_per_turn": sum(char_lengths) / len(turns),
+        "avg_word_length": sum(char_lengths) / sum(turn_lengths),
+        "question_ratio": (sum("?" in turn for turn in turns) / len(turns)),
+        "exclamation_ratio": (sum("!" in turn for turn in turns) / len(turns)),
+        "capitalization_ratio": sum(
+            sum(bool(c.isupper()) for c in turn) / len(turn) for turn in turns
+        )
+        / len(turns),
+    }
