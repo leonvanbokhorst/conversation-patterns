@@ -2,9 +2,11 @@ import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader, TensorDataset
 from typing import Tuple
-from data_generator import generate_synthetic_data, OllamaWrapper
-from sklearn.metrics.pairwise import cosine_similarity
-import numpy as np
+from topic_drift.data_loader import load_from_huggingface
+from topic_drift.data_prep import prepare_training_data
+from topic_drift.llm_wrapper import OllamaWrapper
+from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score
+from tqdm import tqdm
 
 
 class TopicDriftDetector(nn.Module):
@@ -35,8 +37,20 @@ def train_model(
     batch_size: int = 32,
     epochs: int = 10,
     learning_rate: float = 0.001,
-) -> Tuple[TopicDriftDetector, list]:
-    """Train the topic drift detection model."""
+) -> Tuple[TopicDriftDetector, dict]:
+    """Train the topic drift detection model.
+
+    Args:
+        embeddings1: First set of embeddings
+        embeddings2: Second set of embeddings
+        labels: Labels tensor
+        batch_size: Batch size for training
+        epochs: Number of epochs to train
+        learning_rate: Learning rate for optimizer
+
+    Returns:
+        Tuple[TopicDriftDetector, dict]: Trained model and training metrics dictionary
+    """
     # Create data loader
     dataset = TensorDataset(embeddings1, embeddings2, labels)
     dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
@@ -47,11 +61,26 @@ def train_model(
     criterion = nn.BCELoss()
     optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
 
-    # Training loop
-    losses = []
-    for epoch in range(epochs):
+    # Initialize metrics tracking
+    metrics = {
+        "losses": [],
+        "accuracies": [],
+        "precisions": [],
+        "recalls": [],
+        "f1_scores": [],
+    }
+
+    # Training loop with tqdm
+    epoch_pbar = tqdm(range(epochs), desc="Training Progress")
+    for epoch in epoch_pbar:
+        model.train()
         epoch_loss = 0.0
-        for batch_x1, batch_x2, batch_y in dataloader:
+        all_preds = []
+        all_labels = []
+
+        # Batch progress bar
+        batch_pbar = tqdm(dataloader, leave=False, desc=f"Epoch {epoch+1}")
+        for batch_x1, batch_x2, batch_y in batch_pbar:
             # Forward pass
             outputs = model(batch_x1, batch_x2)
             loss = criterion(outputs, batch_y.unsqueeze(1))
@@ -61,48 +90,62 @@ def train_model(
             loss.backward()
             optimizer.step()
 
+            # Collect predictions and true labels
+            preds = (outputs > 0.5).float().squeeze()
+            # Handle both single-item and batch predictions
+            if preds.dim() == 0:
+                all_preds.append(preds.item())
+                all_labels.append(batch_y.item())
+            else:
+                all_preds.extend(preds.tolist())
+                all_labels.extend(batch_y.tolist())
+
             epoch_loss += loss.item()
+            batch_pbar.set_postfix({"batch_loss": f"{loss.item():.4f}"})
 
+        # Calculate epoch metrics
         avg_loss = epoch_loss / len(dataloader)
-        losses.append(avg_loss)
-        print(f"Epoch {epoch+1}/{epochs}, Loss: {avg_loss:.4f}")
+        accuracy = accuracy_score(all_labels, all_preds)
+        precision = precision_score(all_labels, all_preds, zero_division=0)
+        recall = recall_score(all_labels, all_preds, zero_division=0)
+        f1 = f1_score(all_labels, all_preds, zero_division=0)
 
-    return model, losses
+        # Update metrics
+        metrics["losses"].append(avg_loss)
+        metrics["accuracies"].append(accuracy)
+        metrics["precisions"].append(precision)
+        metrics["recalls"].append(recall)
+        metrics["f1_scores"].append(f1)
+
+        # Update progress bar
+        epoch_pbar.set_postfix(
+            {"loss": f"{avg_loss:.4f}", "acc": f"{accuracy:.4f}", "f1": f"{f1:.4f}"}
+        )
+
+    return model, metrics
 
 
 def main():
-    # Generate or load conversation data
-    conversation_data = generate_synthetic_data()
+    """Load data, prepare it, and train the model."""
+    # Load conversation data from Hugging Face
+    conversation_data = load_from_huggingface()
 
-    # Create embeddings and labels from the conversation data
-    ollama = OllamaWrapper(embedding_model="bge-m3")
-    embeddings1, embeddings2, labels = [], [], []
+    # Prepare training data
+    embeddings1, embeddings2, labels = prepare_training_data(conversation_data)
 
-    for conv in conversation_data.conversations:
-        turns = conv["turns"]
-        # Process consecutive turns
-        for i in range(len(turns) - 1):
-            turn1, turn2 = turns[i], turns[i + 1]
-            emb1 = ollama.get_embeddings(turn1)
-            emb2 = ollama.get_embeddings(turn2)
+    # Train model with enhanced metrics
+    model, metrics = train_model(embeddings1, embeddings2, labels)
 
-            # Calculate drift based on cosine similarity
-            sim_score = cosine_similarity([emb1], [emb2])[0][0]
-            drift_label = 1 if sim_score < 0.7 else 0
-
-            embeddings1.append(emb1)
-            embeddings2.append(emb2)
-            labels.append(drift_label)
-
-    # Convert to tensors
-    embeddings1 = torch.tensor(np.array(embeddings1), dtype=torch.float32)
-    embeddings2 = torch.tensor(np.array(embeddings2), dtype=torch.float32)
-    labels = torch.tensor(labels, dtype=torch.float32)
-
-    # Train model
-    model, training_losses = train_model(embeddings1, embeddings2, labels)
+    # Print final metrics
+    print("\nTraining Results:")
+    print(f"Final Loss: {metrics['losses'][-1]:.4f}")
+    print(f"Final Accuracy: {metrics['accuracies'][-1]:.4f}")
+    print(f"Final F1 Score: {metrics['f1_scores'][-1]:.4f}")
+    print(f"Final Precision: {metrics['precisions'][-1]:.4f}")
+    print(f"Final Recall: {metrics['recalls'][-1]:.4f}")
 
     # Example prediction
+    model.eval()  # Set model to evaluation mode
     with torch.no_grad():
         sample_pred = model(embeddings1[:1], embeddings2[:1])
         print(f"\nSample prediction: {sample_pred.item():.4f}")
