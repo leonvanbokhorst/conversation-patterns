@@ -17,7 +17,7 @@ from tqdm.auto import tqdm
 # Load environment variables from .env file
 load_dotenv()
 
-NUM_CONVERSATIONS = 250
+NUM_CONVERSATIONS = 500
 
 
 @dataclass
@@ -187,7 +187,7 @@ def calculate_conversation_metrics(turns: List[str]) -> Dict[str, float]:
 
 def generate_synthetic_data(
     num_conversations: int = NUM_CONVERSATIONS,
-    chat_model: str = "hermes3",
+    chat_model: str = "qwen2.5-coder:32b",
     save_path: Optional[str] = "data",
     hf_repo: Optional[str] = "leonvanbokhorst/topic-drift",
     save_interval: int = 50,
