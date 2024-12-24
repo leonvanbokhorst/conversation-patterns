@@ -1,1 +1,1 @@
-
+"""Topic drift detection package."""
