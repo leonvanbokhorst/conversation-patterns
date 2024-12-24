@@ -79,9 +79,10 @@ def load_from_huggingface(
 
             print("Reading conversations from downloaded file...")
             with open(jsonl_path, "r") as f:
-                for line in tqdm(f, desc="Loading conversations"):
-                    conversations.append(json.loads(line))
-
+                conversations.extend(
+                    json.loads(line)
+                    for line in tqdm(f, desc="Loading conversations")
+                )
             # Update cache if enabled
             if use_cache:
                 print(f"Updating cache: {cache_path}")
