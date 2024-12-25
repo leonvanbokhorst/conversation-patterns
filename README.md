@@ -1,4 +1,6 @@
-# Topic Drift Detection in Conversations
+# Topic Drift Detection in Conversation
+
+[![Test](https://github.com/leonvanbokhorst/conversational-patts/actions/workflows/test.yml/badge.svg)](https://github.com/leonvanbokhorst/conversational-patts/actions/workflows/test.yml)
 
 A deep learning model for detecting and measuring topic drift in conversations using hierarchical attention mechanisms and advanced pattern recognition.
 
@@ -140,8 +142,6 @@ Current model achieves:
 
 ## Installation
 
-[![Test](https://github.com/leonvanbokhorst/conversational-patts/actions/workflows/test.yml/badge.svg)](https://github.com/leonvanbokhorst/conversational-patts/actions/workflows/test.yml)
-
 ```bash
 # Create virtual environment
 python -m venv .venv
@@ -222,6 +222,7 @@ print("Note: Higher scores indicate more topic drift")
 
 The model was trained on conversation data with:
 - Dataset: 6400 conversations (5120 train, 640 val, 640 test)
+- Repository: [leonvanbokhorst/topic-drift-v2](https://huggingface.co/leonvanbokhorst/topic-drift-v2)
 - Window size: 8 turns
 - Batch size: 32
 - Learning rate: 0.0001 with cosine decay
