@@ -297,6 +297,7 @@ class EnhancedTopicDriftDetector(nn.Module):
         return transitions
 
 
+
 def train_model(
     data: DataSplit,
     batch_size: int = 32,
@@ -450,6 +451,7 @@ def train_model(
         if val_results["rmse"] < best_val_rmse:
             best_val_rmse = val_results["rmse"]
             best_model_state = model.state_dict()
+            
             # Save the best model
             torch.save({
                 'epoch': epoch,
@@ -753,7 +755,7 @@ def train_with_patterns(
 def main():
     """Load data, prepare it, and train the model."""
     print("\n=== Running Full Training ===")
-    
+
     # Load conversation data from Hugging Face
     conversation_data = load_from_huggingface()
 

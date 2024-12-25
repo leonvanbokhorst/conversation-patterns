@@ -13,7 +13,6 @@ import hashlib
 from pathlib import Path
 import json
 from sentence_transformers import SentenceTransformer
-
 from topic_drift.data_types import ConversationData
 
 
@@ -47,6 +46,7 @@ def split_data(
     Returns:
         DataSplit object containing train/val/test tensors
     """
+
     # Convert labels to discrete bins for stratification
     n_bins = 10  # Number of bins for stratification
     binned_labels = np.floor(labels.numpy() * n_bins).astype(int)
@@ -58,13 +58,7 @@ def split_data(
     # Determine if stratification is possible
     use_stratify = min_samples >= 2
     stratify = binned_labels if use_stratify else None
-    
-    # First split off test set
-    train_val_emb, test_emb, train_val_labels, test_labels = train_test_split(
-        embeddings.numpy(),
-        labels.numpy(),
-        test_size=test_size,
-        random_state=random_state,
+
         stratify=stratify,
     )
 
@@ -154,6 +148,7 @@ class TurnWindow:
     original_texts: List[str] = None  # Original text for each turn
 
 
+
 def get_cache_path() -> Path:
     """Get the path to the cache directory."""
     cache_dir = Path.home() / ".cache" / "topic_drift" / "embeddings"
@@ -179,6 +174,7 @@ def get_cache_key(
     )
     param_str = f"window_{window_size}"
     return hashlib.md5(f"{data_str}{param_str}".encode()).hexdigest()
+
 
 
 async def process_batch(
@@ -269,7 +265,8 @@ async def prepare_training_data_async(
     val_size: float = 0.15,
     test_size: float = 0.15,
     random_state: int = 42,
-    model_name: str = "BAAI/bge-small-en-v1.5",
+    model_name: str = "BAAI/bge-m3",
+
 ) -> DataSplit:
     """Prepare training data asynchronously using sliding windows.
 
@@ -284,6 +281,7 @@ async def prepare_training_data_async(
         test_size: Fraction of data to use for testing
         random_state: Random seed for reproducibility
         model_name: Name of the sentence-transformer model to use
+
 
     Returns:
         DataSplit object containing train/val/test tensors
@@ -303,6 +301,7 @@ async def prepare_training_data_async(
     # Prepare all windows
     windows = prepare_windows(conversation_data, window_size)
     print(f"Created {len(windows)} windows of size {window_size}")
+
 
     # Process in larger batches
     processed_windows = []
@@ -329,6 +328,7 @@ async def prepare_training_data_async(
     # Convert to tensors in one go
     window_embeddings = torch.from_numpy(window_embeddings_array)
     drift_scores = torch.from_numpy(drift_scores_array)
+
 
     # Split data
     data_split = split_data(
@@ -359,6 +359,7 @@ def prepare_training_data(
     test_size: float = 0.15,
     random_state: int = 42,
     model_name: str = "BAAI/bge-m3",
+
 ) -> DataSplit:
     """Synchronous wrapper for async data preparation.
 
@@ -389,5 +390,6 @@ def prepare_training_data(
             test_size,
             random_state,
             model_name,
+
         )
     )

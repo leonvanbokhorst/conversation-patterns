@@ -133,10 +133,9 @@ Current model achieves:
 
 ## Installation
 
-```bash
-# Clone the repository
-git clone https://github.com/yourusername/topic-drift-detection.git
-cd topic-drift-detection
+[![Test](https://github.com/leonvanbokhorst/conversational-patts/actions/workflows/test.yml/badge.svg)](https://github.com/leonvanbokhorst/conversational-patts/actions/workflows/test.yml)
+
+Implementation of human-like conversational patterns for Virtual Humans, focusing on turn-taking, context awareness, response variation, and repair strategies.
 
 # Create virtual environment
 python -m venv .venv
@@ -212,7 +211,7 @@ If you use this model in your research, please cite:
 ```bibtex
 @software{topic_drift_detector,
   title = {Topic Drift Detection in Conversations},
-  author = {Your Name},
+  author = {Leon van Bokhorst},
   year = {2024},
   url = {https://github.com/yourusername/topic-drift-detection}
 }
