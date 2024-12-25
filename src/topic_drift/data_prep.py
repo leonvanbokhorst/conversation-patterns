@@ -46,10 +46,13 @@ def split_data(
     Returns:
         DataSplit object containing train/val/test tensors
     """
+    # Convert tensors to numpy for sklearn
+    embeddings_np = embeddings.numpy()
+    labels_np = labels.numpy()
 
     # Convert labels to discrete bins for stratification
     n_bins = 10  # Number of bins for stratification
-    binned_labels = np.floor(labels.numpy() * n_bins).astype(int)
+    binned_labels = np.floor(labels_np * n_bins).astype(int)
     
     # Count samples in each bin
     unique_bins, bin_counts = np.unique(binned_labels, return_counts=True)
@@ -59,7 +62,13 @@ def split_data(
     use_stratify = min_samples >= 2
     stratify = binned_labels if use_stratify else None
 
-        stratify=stratify,
+    # First split out test set
+    train_val_emb, test_emb, train_val_labels, test_labels = train_test_split(
+        embeddings_np,
+        labels_np,
+        test_size=test_size,
+        random_state=random_state,
+        stratify=stratify
     )
 
     # Then split remaining data into train and validation
@@ -75,7 +84,7 @@ def split_data(
         train_val_labels,
         test_size=val_size / (1 - test_size),  # Adjust for remaining data
         random_state=random_state,
-        stratify=stratify_remaining,
+        stratify=stratify_remaining
     )
 
     return DataSplit(
@@ -84,7 +93,7 @@ def split_data(
         val_embeddings=torch.from_numpy(val_emb).float(),
         val_labels=torch.from_numpy(val_labels).float(),
         test_embeddings=torch.from_numpy(test_emb).float(),
-        test_labels=torch.from_numpy(test_labels).float(),
+        test_labels=torch.from_numpy(test_labels).float()
     )
 
 

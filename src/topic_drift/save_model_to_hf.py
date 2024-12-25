@@ -97,15 +97,18 @@ model-index:
       type: topic-drift-detection
       name: Topic Drift Detection
     dataset:
-      name: leonvanbokhorst/topic-drift
+      name: leonvanbokhorst/topic-drift-v2
       type: conversations
     metrics:
       - name: Test RMSE
         type: rmse
-        value: 0.0129
+        value: 0.0153
       - name: Test R²
         type: r2
-        value: 0.8373
+        value: 0.8500
+      - name: Test Loss 
+        type: loss
+        value: 0.0002
 ---
 
 # Topic Drift Detector Model

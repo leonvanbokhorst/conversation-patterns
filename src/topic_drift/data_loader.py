@@ -6,6 +6,7 @@ from pathlib import Path
 from tqdm.auto import tqdm
 from topic_drift.data_types import ConversationData
 import hashlib
+from datasets import load_dataset
 
 
 def get_cache_path() -> Path:
@@ -21,7 +22,7 @@ def get_cache_key(repo_id: str) -> str:
 
 
 def load_from_huggingface(
-    repo_id: str = "leonvanbokhorst/topic-drift",
+    repo_id: str = "leonvanbokhorst/topic-drift-v2",
     token: str = None,
     use_cache: bool = True,
     force_reload: bool = False,
@@ -36,62 +37,29 @@ def load_from_huggingface(
 
     Returns:
         ConversationData object containing the loaded conversations
-
-    Raises:
-        ValueError: If no token is provided and none found in environment
-        Exception: If download fails or no data found
     """
-    # Get token from env if not provided
-    token = token or os.getenv("HF_TOKEN")
-    if not token:
-        raise ValueError(
-            "Hugging Face token not found. Set HF_TOKEN in .env or pass token parameter"
-        )
-
-    cache_path = get_cache_path() / f"{get_cache_key(repo_id)}.jsonl"
-
-    # Check cache first
-    if use_cache and not force_reload and cache_path.exists():
-        print(f"Loading from cache: {cache_path}")
-        with open(cache_path, "r") as f:
-            conversations = [json.loads(line) for line in f]
-        return ConversationData(conversations=conversations)
-
-    print(f"Downloading from Hugging Face: {repo_id}")
-    api = HfApi(token=token)
-
-    # Create temp directory for file operations
-    with tempfile.TemporaryDirectory() as tmp_dir:
-        try:
-            api.snapshot_download(
-                repo_id=repo_id,
-                repo_type="dataset",
-                local_dir=tmp_dir,
-                token=token,
-                ignore_patterns=[".*"],
-            )
-
-            # Load conversations from JSONL
-            conversations = []
-            jsonl_path = Path(tmp_dir) / "conversations.jsonl"
-            if not jsonl_path.exists():
-                raise Exception(f"No data found in {repo_id}")
-
-            print("Reading conversations from downloaded file...")
-            with open(jsonl_path, "r") as f:
-                conversations.extend(
-                    json.loads(line)
-                    for line in tqdm(f, desc="Loading conversations")
-                )
-            # Update cache if enabled
-            if use_cache:
-                print(f"Updating cache: {cache_path}")
-                with open(cache_path, "w") as f:
-                    for conv in conversations:
-                        json.dump(conv, f)
-                        f.write("\n")
-
-            return ConversationData(conversations=conversations)
-
-        except Exception as e:
-            raise Exception(f"Failed to load data from {repo_id}: {str(e)}") from e
+    print(f"Loading dataset from Hugging Face: {repo_id}")
+    dataset = load_dataset(repo_id)
+    
+    if dataset is None:
+        raise ValueError("Failed to load dataset from Hugging Face")
+    
+    # Convert dataset to conversation format
+    conversations = []
+    for split in ['train', 'validation', 'test']:
+        for example in dataset[split]:
+            conversation = {
+                'turns': example['conversation'],
+                'speakers': example['speakers'],
+                'topic_markers': example['topic_markers'],
+                'transition_points': example['transition_points'],
+                'quality_score': example.get('quality_score', 1.0)
+            }
+            conversations.append(conversation)
+    
+    print(f"Loaded {len(conversations)} conversations")
+    print(f"Train size: {len(dataset['train'])}")
+    print(f"Validation size: {len(dataset['validation'])}")
+    print(f"Test size: {len(dataset['test'])}")
+    
+    return ConversationData(conversations=conversations)
