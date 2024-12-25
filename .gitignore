@@ -21,17 +21,6 @@ wheels/
 *.egg
 .venv/
 
-# Virtual Environment
-venv/
-ENV/
-env/
-
-# IDE
-.idea/
-.vscode/
-*.swp
-*.swo
-
 # Testing
 .coverage
 coverage.xml
@@ -39,17 +28,28 @@ htmlcov/
 .pytest_cache/
 .mypy_cache/
 
-# Project specific
-*.log
+# Virtual Environment
 .env
-.env.*
-!.env.example
+.venv
+env/
+venv/
+ENV/
 
-# Redis
-dump.rdb
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
 
-# Misc
-.DS_Store
-.directory
-.Trash-*
+# Project specific
+models/
+*.pt
+*.pth
+*.ckpt
+*.png
+*.txt
+
+# Logs
+*.log
+logs/
 
