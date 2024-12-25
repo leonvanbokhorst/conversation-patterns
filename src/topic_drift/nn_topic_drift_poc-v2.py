@@ -333,17 +333,18 @@ def train_model(
     print(f"Training set shape: {train_embeddings.shape}")
     print(f"Validation set shape: {val_embeddings.shape}")
 
-    # Adjust batch size to ensure it divides dataset size
+    # Adjust batch size to ensure reasonable sizes
     train_size = len(train_embeddings)
     val_size = len(val_embeddings)
     
-    # Calculate batch size that divides both train and val sizes
-    max_batch = min(batch_size, train_size // 2, val_size // 2)
-    adjusted_batch = max_batch
-    while train_size % adjusted_batch != 0 or val_size % adjusted_batch != 0:
-        adjusted_batch -= 1
-    batch_size = adjusted_batch
-    print(f"Adjusted batch size to: {batch_size}")
+    # Calculate reasonable batch size
+    max_batch_size = min(batch_size, train_size // 10)  # Limit to 10% of training data
+    
+    # Ensure batch size is power of 2 for efficiency
+    batch_size = 2 ** int(np.log2(max_batch_size))
+    batch_size = max(32, min(batch_size, 256))  # Keep between 32 and 256
+    
+    print(f"Using batch size: {batch_size}")
 
     # Create data loaders with fixed batch size
     train_dataset = TensorDataset(train_embeddings, train_labels)
