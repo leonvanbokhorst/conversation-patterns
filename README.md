@@ -4,7 +4,7 @@ A deep learning model for detecting and measuring topic drift in conversations u
 
 ## Overview
 
-This project implements a sophisticated neural network architecture for detecting topic drift in conversational data. The model combines hierarchical pattern detection, multi-head attention, explicit transition detection, and pattern-aware self-attention to track how conversations evolve and transition between topics.
+This project implements a neural network architecture for detecting topic drift in conversational data. The model combines hierarchical pattern detection, multi-head attention, explicit transition detection, and pattern-aware self-attention to track how conversations evolve and transition between topics.
 
 ## Model Architecture
 
