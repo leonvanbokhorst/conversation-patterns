@@ -158,21 +158,36 @@ import torch
 from transformers import AutoModel, AutoTokenizer
 from topic_drift.nn_topic_drift_poc_v2 import EnhancedTopicDriftDetector
 
+def load_model(model_path: str = 'models/best_topic_drift_model.pt') -> EnhancedTopicDriftDetector:
+    """Load the topic drift model from checkpoint."""
+    # Load checkpoint
+    checkpoint = torch.load(model_path, weights_only=True)
+    
+    # Create model with same hyperparameters
+    model = EnhancedTopicDriftDetector(
+        input_dim=1024,  # BGE-M3 embedding dimension
+        hidden_dim=checkpoint['hyperparameters']['hidden_dim']
+    )
+    
+    # Load state dict
+    model.load_state_dict(checkpoint['model_state_dict'])
+    return model
+
 # Load base embedding model
 base_model = AutoModel.from_pretrained('BAAI/bge-m3')
 tokenizer = AutoTokenizer.from_pretrained('BAAI/bge-m3')
 
 # Load topic drift detector
-model = torch.load('models/best_topic_drift_model.pt')
+model = load_model()
 model.eval()
 
-# Prepare conversation window (8 turns)
+# Example conversation with topic drift
 conversation = [
     "How was your weekend?",
     "It was great! Went hiking.",
     "Which trail did you take?",
     "The mountain loop trail.",
-    "That's nice. By the way, did you watch the game?",
+    "That's nice. By the way, did you watch the game?",  # Topic shift
     "Yes! What an amazing match!",
     "The final score was incredible.",
     "I couldn't believe that last-minute goal."
@@ -189,8 +204,18 @@ with torch.no_grad():
     # Get drift score
     drift_scores = model(conversation_embeddings)
     
+print("\nExample Conversation Analysis")
+print("-" * 50)
+print("Conversation turns:")
+for i, turn in enumerate(conversation, 1):
+    print(f"{i}. {turn}")
+print("-" * 50)
 print(f"Topic drift score: {drift_scores.item():.4f}")
-# Higher scores indicate more topic drift
+print("Note: Higher scores indicate more topic drift")
+
+# Example output:
+# Topic drift score: 0.4454 - Moderate to high drift
+# Shows clear transition from hiking to sports discussion
 ```
 
 ## Training Details
