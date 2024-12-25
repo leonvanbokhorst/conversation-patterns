@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader, TensorDataset
-from typing import Tuple, Dict, List
+from typing import Tuple, Dict, List, Optional
 from topic_drift.data_loader import load_from_huggingface
 from topic_drift.data_prep import prepare_training_data, DataSplit
 from tqdm import tqdm
@@ -10,6 +10,12 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 import numpy as np
 from pathlib import Path
+import torch.nn.functional as F
+import math
+import os
+
+os.environ["TOKENIZERS_PARALLELISM"] = "false"  # Prevent tokenizer warnings
+torch.multiprocessing.set_sharing_strategy('file_system')  # Fix multiprocessing issues
 
 # Linguistic markers for topic transitions
 TRANSITION_MARKERS = [
@@ -24,6 +30,188 @@ TRANSITION_MARKERS = [
     "however",      # Contrast/shift
     "meanwhile",    # Parallel topic
 ]
+
+class PreNorm(nn.Module):
+    """Pre-normalization module for transformer-style attention."""
+    def __init__(self, dim: int, fn: nn.Module):
+        super().__init__()
+        self.norm = nn.LayerNorm(dim)
+        self.fn = fn
+    
+    def forward(self, x: torch.Tensor, **kwargs) -> torch.Tensor:
+        return self.fn(self.norm(x), **kwargs)
+
+
+class MultiHeadAttention(nn.Module):
+    """Enhanced multi-head attention with key/query/value projections."""
+    def __init__(self, dim: int, num_heads: int = 4, head_dim: int = 64, dropout: float = 0.1):
+        super().__init__()
+        inner_dim = head_dim * num_heads
+        self.num_heads = num_heads
+        self.scale = head_dim ** -0.5
+
+        # Separate projections for key, query, value
+        self.to_q = nn.Linear(dim, inner_dim, bias=False)
+        self.to_k = nn.Linear(dim, inner_dim, bias=False)
+        self.to_v = nn.Linear(dim, inner_dim, bias=False)
+        
+        self.to_out = nn.Sequential(
+            nn.Linear(inner_dim, dim),
+            nn.Dropout(dropout)
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        b, n, _ = x.shape  # batch, sequence length, dimension
+        h = self.num_heads
+
+        # Project and reshape for multi-head attention
+        q = self.to_q(x).view(b, n, h, -1).transpose(1, 2)
+        k = self.to_k(x).view(b, n, h, -1).transpose(1, 2)
+        v = self.to_v(x).view(b, n, h, -1).transpose(1, 2)
+
+        # Scaled dot-product attention
+        dots = torch.matmul(q, k.transpose(-1, -2)) * self.scale
+        attn = F.softmax(dots, dim=-1)
+        
+        # Combine heads
+        out = torch.matmul(attn, v)
+        out = out.transpose(1, 2).reshape(b, n, -1)
+        return self.to_out(out)
+
+
+class FeedForward(nn.Module):
+    """Position-wise feed-forward network with GELU activation."""
+    def __init__(self, dim: int, hidden_dim: int, dropout: float = 0.1):
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Linear(dim, hidden_dim),
+            nn.GELU(),  # Using GELU instead of ReLU
+            nn.Dropout(dropout),
+            nn.Linear(hidden_dim, dim),
+            nn.Dropout(dropout)
+        )
+    
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.net(x)
+
+
+class HierarchicalPatternDetector(nn.Module):
+    """Hierarchical pattern detection with multi-scale analysis."""
+    def __init__(self, hidden_dim: int, num_layers: int = 3):
+        super().__init__()
+        self.layers = nn.ModuleList([
+            nn.LSTM(
+                input_size=hidden_dim,  # Keep input size constant
+                hidden_size=hidden_dim,  # Keep hidden size constant
+                bidirectional=True,
+                batch_first=True
+            ) for _ in range(num_layers)
+        ])
+        
+        self.downsample = nn.ModuleList([
+            nn.Conv1d(
+                in_channels=hidden_dim * 2,  # Bidirectional output
+                out_channels=hidden_dim,     # Project back to hidden_dim
+                kernel_size=2,
+                stride=2
+            ) for _ in range(num_layers - 1)
+        ])
+        
+    def forward(self, x: torch.Tensor) -> List[torch.Tensor]:
+        batch_size = x.size(0)
+        outputs = []
+        current = x
+        
+        for i, (lstm, down) in enumerate(zip(self.layers[:-1], self.downsample)):
+            # LSTM processing
+            lstm_out, _ = lstm(current)  # [batch, seq_len, hidden_dim * 2]
+            outputs.append(lstm_out)
+            
+            # Downsample and project back to hidden_dim
+            current = down(lstm_out.transpose(1, 2)).transpose(1, 2)
+        
+        # Final LSTM layer without downsampling
+        final_out, _ = self.layers[-1](current)
+        outputs.append(final_out)
+        
+        return outputs
+
+
+class TransitionDetector(nn.Module):
+    """Explicit transition point detection with linguistic marker attention."""
+    def __init__(self, hidden_dim: int, num_markers: int = len(TRANSITION_MARKERS)):
+        super().__init__()
+        self.marker_embeddings = nn.Parameter(torch.randn(num_markers, hidden_dim))
+        self.marker_attention = MultiHeadAttention(hidden_dim, num_heads=4)
+        self.transition_scorer = nn.Sequential(
+            nn.Linear(hidden_dim * 2, hidden_dim),
+            nn.GELU(),
+            nn.Dropout(0.35),
+            nn.Linear(hidden_dim, 1),
+            nn.Sigmoid()
+        )
+        
+    def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        # Expand marker embeddings for batch processing
+        batch_size = x.size(0)
+        markers = self.marker_embeddings.unsqueeze(0).expand(batch_size, -1, -1)
+        
+        # Compute attention between input and markers
+        marker_context = self.marker_attention(markers)  # [batch, num_markers, hidden_dim]
+        
+        # Compute transition scores
+        transitions = []
+        for i in range(x.size(1) - 1):
+            current = x[:, i:i+2].mean(dim=1)  # Average consecutive turns
+            # Concatenate with marker context
+            combined = torch.cat([
+                current,
+                marker_context.mean(dim=1)  # Average marker context
+            ], dim=-1)
+            score = self.transition_scorer(combined)
+            transitions.append(score)
+            
+        transition_scores = torch.stack(transitions, dim=1)  # [batch, seq_len-1, 1]
+        return transition_scores, marker_context
+
+
+class PatternSelfAttention(nn.Module):
+    """Self-attention mechanism for pattern interaction."""
+    def __init__(self, hidden_dim: int, num_patterns: int):
+        super().__init__()
+        self.pattern_embeddings = nn.Parameter(torch.randn(num_patterns, hidden_dim))
+        self.self_attention = MultiHeadAttention(hidden_dim, num_heads=4)
+        self.pattern_gate = nn.Sequential(
+            nn.Linear(hidden_dim * 2, hidden_dim),
+            nn.GELU(),
+            nn.Linear(hidden_dim, 1),
+            nn.Sigmoid()
+        )
+        
+    def forward(self, pattern_logits: torch.Tensor, hidden_states: torch.Tensor) -> torch.Tensor:
+        batch_size = pattern_logits.size(0)
+        
+        # Get pattern-weighted embeddings
+        pattern_weights = F.softmax(pattern_logits, dim=-1)
+        weighted_patterns = torch.matmul(
+            pattern_weights,
+            self.pattern_embeddings
+        )
+        
+        # Self-attention between patterns
+        attended_patterns = self.self_attention(weighted_patterns.unsqueeze(1))
+        
+        # Compute gating mechanism
+        gate_input = torch.cat([
+            attended_patterns.squeeze(1),
+            hidden_states.mean(dim=1)
+        ], dim=-1)
+        gate = self.pattern_gate(gate_input)
+        
+        # Apply gating
+        gated_patterns = gate * pattern_weights
+        return gated_patterns
+
 
 class EnhancedTopicDriftDetector(nn.Module):
     def __init__(self, input_dim: int, hidden_dim: int = 512):
@@ -47,78 +235,81 @@ class EnhancedTopicDriftDetector(nn.Module):
         print(f"Number of attention heads: {self.num_heads}")
         print(f"Head dimension: {self.head_dim}")
 
-        # Embedding processor with residual connection and increased dropout
+        # Enhanced embedding processor with residual connection
         self.embedding_processor = nn.Sequential(
-            nn.Linear(input_dim, hidden_dim),
-            nn.LayerNorm(hidden_dim),
-            nn.ReLU(),
-            nn.Dropout(0.35),  # Increased dropout
-            nn.Linear(hidden_dim, hidden_dim),
-            nn.LayerNorm(hidden_dim),
-            nn.ReLU(),
-            nn.Dropout(0.35)  # Increased dropout
+            PreNorm(input_dim, 
+                nn.Sequential(
+                    nn.Linear(input_dim, hidden_dim),
+                    nn.GELU(),
+                    nn.Dropout(0.35),
+                    nn.Linear(hidden_dim, hidden_dim)
+                )
+            ),
+            nn.Dropout(0.35)
         )
 
-        # Dynamic multi-head attention with L2 regularization
-        self.local_attention = nn.ModuleList([
-            nn.Sequential(
-                nn.Linear(hidden_dim, self.head_dim, bias=False),  # Removed bias for regularization
-                nn.ReLU(),
-                nn.Linear(self.head_dim, 1, bias=False),  # Removed bias for regularization
-                nn.Softmax(dim=1)
-            ) for _ in range(self.num_heads)
+        # Enhanced attention blocks with residual connections
+        self.attention_blocks = nn.ModuleList([
+            nn.ModuleList([
+                PreNorm(hidden_dim, 
+                    MultiHeadAttention(hidden_dim, self.num_heads, self.head_dim, dropout=0.35)),
+                PreNorm(hidden_dim, 
+                    FeedForward(hidden_dim, hidden_dim * 4, dropout=0.35))
+            ]) for _ in range(3)  # 3 layers of attention
         ])
         
-        # Global context attention with position encoding
+        # Position encoding with learned parameters
         self.position_encoder = nn.Parameter(torch.randn(1, 8, hidden_dim))
-        self.global_attention = nn.Sequential(
-            nn.Linear(hidden_dim, hidden_dim, bias=False),  # Removed bias
-            nn.Tanh(),
-            nn.Dropout(0.35),  # Added dropout
-            nn.Linear(hidden_dim, self.num_heads, bias=False),
-            nn.Softmax(dim=1)
+        
+        # Hierarchical pattern detection
+        self.hierarchical_detector = HierarchicalPatternDetector(hidden_dim)
+        
+        # Transition detection with linguistic markers
+        self.transition_detector = TransitionDetector(hidden_dim)
+        
+        # Dimension adapter for pattern features
+        self.pattern_dim_adapter = nn.Sequential(
+            nn.Linear(hidden_dim * 3, hidden_dim * 3),  # 1536 -> 1536 (keep dims consistent)
+            nn.GELU(),
+            nn.Dropout(0.35)
         )
         
-        # Enhanced pattern detection with increased regularization
-        self.pattern_detector = nn.LSTM(
-            input_size=hidden_dim,
-            hidden_size=hidden_dim,
-            num_layers=3,
-            bidirectional=True,
-            dropout=0.35,  # Increased dropout
-            bias=False  # Removed bias for regularization
-        )
-
-        # Pattern classifier with regularization
+        # Pattern classifier with proper input dimension
         self.pattern_classifier = nn.Sequential(
-            nn.Linear(2 * hidden_dim, hidden_dim, bias=False),
-            nn.ReLU(),
-            nn.Dropout(0.35),
-            nn.Linear(hidden_dim, len(self.get_pattern_types()), bias=False),
-            nn.Softmax(dim=-1)
+            PreNorm(hidden_dim * 3,  # Now matches the adapted dimensions
+                nn.Sequential(
+                    nn.Linear(hidden_dim * 3, hidden_dim, bias=False),
+                    nn.GELU(),
+                    nn.Dropout(0.35),
+                    nn.Linear(hidden_dim, len(self.get_pattern_types()), bias=False)
+                )
+            )
+        )
+        
+        # Pattern interaction with self-attention
+        self.pattern_interaction = PatternSelfAttention(
+            hidden_dim,
+            num_patterns=len(self.get_pattern_types())
         )
 
-        # Dynamic weight generator with regularization
-        self.weight_generator = nn.Sequential(
-            nn.Linear(2 * hidden_dim, hidden_dim, bias=False),
-            nn.ReLU(),
-            nn.Dropout(0.35),
-            nn.Linear(hidden_dim, 3, bias=False),
-            nn.Softmax(dim=-1)
-        )
-
-        # Final regression with deeper network and increased regularization
+        # Final regression with residual connections
         self.regressor = nn.Sequential(
-            nn.Linear(hidden_dim, hidden_dim, bias=False),
-            nn.LayerNorm(hidden_dim),
-            nn.ReLU(),
-            nn.Dropout(0.35),
-            nn.Linear(hidden_dim, hidden_dim // 2, bias=False),
-            nn.LayerNorm(hidden_dim // 2),
-            nn.ReLU(),
-            nn.Dropout(0.35),
-            nn.Linear(hidden_dim // 2, 1, bias=False),
-            nn.Sigmoid()
+            PreNorm(hidden_dim * 3 + 1,  # Changed to match combined features dimensions
+                nn.Sequential(
+                    nn.Linear(hidden_dim * 3 + 1, hidden_dim, bias=False),
+                    nn.GELU(),
+                    nn.Dropout(0.35),
+                    nn.Linear(hidden_dim, hidden_dim // 2, bias=False)
+                )
+            ),
+            PreNorm(hidden_dim // 2,
+                nn.Sequential(
+                    nn.GELU(),
+                    nn.Dropout(0.35),
+                    nn.Linear(hidden_dim // 2, 1, bias=False),
+                    nn.Sigmoid()
+                )
+            )
         )
 
     def get_pattern_types(self):
@@ -134,143 +325,52 @@ class EnhancedTopicDriftDetector(nn.Module):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Enhanced forward pass with multi-level attention."""
-        batch_size = x.shape[0]
-        window_size = 8
+        b = x.shape[0]  # batch size
         
-        # Only print dimensions on first forward pass
-        if not self._has_printed_dims:
-            print("\n=== Forward Pass Dimensions ===")
-            print(f"Input shape: {x.shape}")
-            
-            # Reshape and process embeddings
-            x = x.view(batch_size, window_size, self.input_dim)
-            print(f"Reshaped input: {x.shape}")
-            
-            processed = self.embedding_processor(x)
-            print(f"Processed embeddings: {processed.shape}")
-            
-            # Add positional encoding
-            processed = processed + self.position_encoder
-            print(f"After positional encoding: {processed.shape}")
-            
-            # Multi-head local attention
-            local_attentions = []
-            for head_idx, head in enumerate(self.local_attention):
-                head_attn = head(processed)
-                print(f"Head {head_idx} attention: {head_attn.shape}")
-                local_attentions.append(head_attn)
-            local_attention = torch.cat(local_attentions, dim=2)
-            print(f"Combined local attention: {local_attention.shape}")
-            
-            # Global attention with position awareness
-            global_attention = self.global_attention(processed)
-            print(f"Global attention: {global_attention.shape}")
-            
-            # Enhanced pattern detection with proper batch handling
-            lstm_input = processed.transpose(0, 1)
-            pattern_output, (h_n, _) = self.pattern_detector(lstm_input)
-            pattern_output = pattern_output.transpose(0, 1)
-            print(f"Pattern detector output: {pattern_output.shape}")
-            print(f"Pattern hidden state: {h_n.shape}")
-            
-            # Get last forward and backward states from last layer
-            num_layers = 3
-            num_directions = 2
-            last_layer_forward = h_n[2 * num_layers - 2]
-            last_layer_backward = h_n[2 * num_layers - 1]
-            pattern_hidden = torch.cat([last_layer_forward, last_layer_backward], dim=1)
-            print(f"Pattern hidden concatenated: {pattern_hidden.shape}")
-            
-            pattern_probs = self.pattern_classifier(pattern_hidden)
-            print(f"Pattern probabilities: {pattern_probs.shape}")
-            
-            weights = self.weight_generator(pattern_hidden)
-            print(f"Generated weights: {weights.shape}")
-            
-            local_context = local_attention.mean(dim=2)
-            global_context = global_attention.mean(dim=2)
-            pattern_context = pattern_output.mean(dim=2)
-            print(f"Context shapes - Local: {local_context.shape}, Global: {global_context.shape}, Pattern: {pattern_context.shape}")
-            
-            contexts = torch.stack([local_context, global_context, pattern_context], dim=2)
-            print(f"Stacked contexts: {contexts.shape}")
-            
-            weights = weights.unsqueeze(1)
-            print(f"Expanded weights: {weights.shape}")
-            
-            attention = torch.bmm(contexts, weights.transpose(1, 2))
-            attention = attention.softmax(dim=1)
-            print(f"Final attention: {attention.shape}")
-            
-            transitions = self.semantic_bridge_detection(processed)
-            print(f"Transitions: {transitions.shape}")
-            
-            context = torch.sum(attention * processed, dim=1)
-            print(f"Final context: {context.shape}")
-            
-            base_score = self.regressor(context)
-            print(f"Base score: {base_score.shape}")
-            
-            pattern_weights = torch.tensor(
-                [0.8, 0.9, 1.0, 1.1, 1.2, 0.9, 1.3],
-                device=pattern_probs.device
-            ).unsqueeze(0)
-            
-            pattern_factor = torch.sum(pattern_probs * pattern_weights, dim=1, keepdim=True)
-            transition_factor = 1 + transitions.mean(dim=1, keepdim=True)
-            final_score = base_score * pattern_factor * transition_factor
-            print(f"Final score: {final_score.shape}\n")
-            
-            self._has_printed_dims = True  # Set flag to True after first print
-        else:
-            # Regular forward pass without printing
-            x = x.view(batch_size, window_size, self.input_dim)
-            processed = self.embedding_processor(x)
-            processed = processed + self.position_encoder
-            
-            local_attentions = []
-            for head in self.local_attention:
-                head_attn = head(processed)
-                local_attentions.append(head_attn)
-            local_attention = torch.cat(local_attentions, dim=2)
-            
-            global_attention = self.global_attention(processed)
-            
-            lstm_input = processed.transpose(0, 1)
-            pattern_output, (h_n, _) = self.pattern_detector(lstm_input)
-            pattern_output = pattern_output.transpose(0, 1)
-            
-            last_layer_forward = h_n[2 * 3 - 2]
-            last_layer_backward = h_n[2 * 3 - 1]
-            pattern_hidden = torch.cat([last_layer_forward, last_layer_backward], dim=1)
-            
-            pattern_probs = self.pattern_classifier(pattern_hidden)
-            weights = self.weight_generator(pattern_hidden)
-            
-            local_context = local_attention.mean(dim=2)
-            global_context = global_attention.mean(dim=2)
-            pattern_context = pattern_output.mean(dim=2)
-            
-            contexts = torch.stack([local_context, global_context, pattern_context], dim=2)
-            weights = weights.unsqueeze(1)
-            
-            attention = torch.bmm(contexts, weights.transpose(1, 2))
-            attention = attention.softmax(dim=1)
-            
-            transitions = self.semantic_bridge_detection(processed)
-            context = torch.sum(attention * processed, dim=1)
-            base_score = self.regressor(context)
-            
-            pattern_weights = torch.tensor(
-                [0.8, 0.9, 1.0, 1.1, 1.2, 0.9, 1.3],
-                device=pattern_probs.device
-            ).unsqueeze(0)
-            
-            pattern_factor = torch.sum(pattern_probs * pattern_weights, dim=1, keepdim=True)
-            transition_factor = 1 + transitions.mean(dim=1, keepdim=True)
-            final_score = base_score * pattern_factor * transition_factor
-            
-        return torch.clamp(final_score, 0, 1)
+        # Process embeddings first to match hidden dimension
+        x = x.view(b, 8, -1)  # [batch, seq_len, input_dim]
+        x = self.embedding_processor(x)  # Now x is [batch, seq_len, hidden_dim]
+        
+        # Add position encoding after embedding processing
+        x = x + self.position_encoder
+        
+        # Apply attention blocks with residual connections
+        for attn, ff in self.attention_blocks:
+            x = attn(x) + x
+            x = ff(x) + x
+        
+        # Hierarchical pattern detection
+        pattern_scales = self.hierarchical_detector(x)  # List of tensors [batch, seq_len, hidden_dim * 2]
+        
+        # Transition detection
+        transition_scores, marker_context = self.transition_detector(x)  # [batch, seq_len-1, 1], [batch, num_markers, hidden_dim]
+        
+        # Pattern classification - ensure proper dimensions
+        pattern_features = torch.cat([
+            pattern_scales[-1].mean(dim=1),  # [batch, hidden_dim * 2]
+            marker_context.mean(dim=1)       # [batch, hidden_dim]
+        ], dim=-1)  # Result: [batch, hidden_dim * 3]
+        
+        # Adapt pattern features dimensions
+        pattern_features = self.pattern_dim_adapter(pattern_features)  # [batch, hidden_dim * 3]
+        
+        # Pattern classification
+        pattern_logits = self.pattern_classifier(pattern_features)  # [batch, num_patterns]
+        
+        # Pattern interaction
+        pattern_weights = self.pattern_interaction(pattern_logits, x)  # [batch, num_patterns]
+        
+        # Combine all features for final prediction
+        combined = torch.cat([
+            x.mean(dim=1),                      # [batch, hidden_dim]
+            pattern_scales[-1].mean(dim=1),     # [batch, hidden_dim * 2]
+            transition_scores.mean(dim=1)        # [batch, 1]
+        ], dim=-1)  # Result: [batch, hidden_dim * 3 + 1]
+        
+        # Final prediction
+        out = self.regressor(combined)  # [batch, 1]
+        
+        return out
 
     def semantic_bridge_detection(self, embeddings: torch.Tensor) -> torch.Tensor:
         """Detect semantic bridges between turns."""
@@ -300,96 +400,254 @@ class EnhancedTopicDriftDetector(nn.Module):
         return transitions
 
 
+class DynamicWindowAugmentation:
+    """Dynamic window size augmentation with adaptive padding/truncation."""
+    def __init__(self, base_window_size: int = 8, size_range: int = 2):
+        self.base_size = base_window_size
+        self.size_range = size_range
+    
+    def __call__(self, conversation: torch.Tensor) -> torch.Tensor:
+        # Keep original shape for later
+        batch_size = conversation.shape[0]
+        total_dim = conversation.shape[1]
+        dim = total_dim // self.base_size
+        
+        # Reshape input from [batch_size, base_size * dim] to [batch_size, base_size, dim]
+        x = conversation.view(batch_size, self.base_size, dim)
+        
+        # Randomly choose window size
+        new_size = self.base_size + torch.randint(-self.size_range, self.size_range + 1, (1,)).item()
+        
+        if new_size < self.base_size:
+            # Random truncation
+            start_idx = torch.randint(0, self.base_size - new_size + 1, (1,)).item()
+            x = x[:, start_idx:start_idx + new_size, :]
+            # Pad back to original size
+            padding = self.base_size - new_size
+            x = F.pad(x, (0, 0, 0, padding), mode='replicate')
+        elif new_size > self.base_size:
+            # Adaptive padding using interpolation
+            x = F.interpolate(
+                x.transpose(1, 2),  # [B, D, T]
+                size=new_size,
+                mode='linear',
+                align_corners=False
+            ).transpose(1, 2)  # [B, T, D]
+            # Truncate back to original size
+            x = x[:, :self.base_size, :]
+        
+        # Return to original shape [batch_size, base_size * dim]
+        return x.reshape(batch_size, total_dim)
+
+
+class ContrastiveLearningLoss(nn.Module):
+    """Contrastive learning with pattern-aware positive/negative sampling."""
+    def __init__(self, temperature: float = 0.07):
+        super().__init__()
+        self.temperature = temperature
+        self.eps = 1e-8  # For numerical stability
+        
+    def forward(
+        self,
+        embeddings: torch.Tensor,
+        pattern_weights: torch.Tensor,
+        transition_scores: torch.Tensor,
+        mask: Optional[torch.Tensor] = None
+    ) -> torch.Tensor:
+        batch_size = embeddings.shape[0]
+        
+        # Normalize embeddings
+        embeddings = F.normalize(embeddings, p=2, dim=-1)
+        
+        # Compute similarity matrix with numerical stability
+        sim_matrix = torch.clamp(
+            torch.matmul(embeddings, embeddings.transpose(0, 1)) / self.temperature,
+            min=-10.0,  # Prevent extreme negative values
+            max=10.0    # Prevent extreme positive values
+        )
+        
+        # Create pattern-based positive pairs with normalization
+        pattern_weights = F.normalize(pattern_weights, p=2, dim=-1)
+        pattern_sim = torch.clamp(
+            torch.matmul(pattern_weights, pattern_weights.transpose(0, 1)),
+            min=-10.0,
+            max=10.0
+        )
+        
+        # Compute transition similarity matrix
+        # First, get mean transition score per sequence
+        mean_transitions = transition_scores.mean(dim=1).squeeze(-1)  # [batch_size]
+        # Add small epsilon to prevent division by zero
+        mean_transitions = mean_transitions + self.eps
+        # Compute pairwise differences and normalize
+        transition_diffs = torch.abs(mean_transitions.unsqueeze(0) - mean_transitions.unsqueeze(1))
+        max_diff = torch.max(transition_diffs) + self.eps
+        transition_sim = torch.clamp(
+            1 - (transition_diffs / max_diff),
+            min=0.0,
+            max=1.0
+        )
+        
+        # Combine similarities with weighted average
+        combined_sim = (
+            0.4 * sim_matrix +
+            0.4 * pattern_sim +
+            0.2 * transition_sim
+        )
+        
+        # Mask out self-contrast cases
+        mask = torch.eye(batch_size, dtype=torch.bool, device=embeddings.device)
+        combined_sim.masked_fill_(mask, -10.0)  # Use finite value instead of -inf
+        
+        # Compute contrastive loss with numerical stability
+        log_softmax = F.log_softmax(combined_sim, dim=-1)
+        loss = -torch.mean(
+            torch.clamp(
+                torch.diagonal(log_softmax),
+                min=-10.0,
+                max=0.0
+            )
+        )
+        
+        return torch.clamp(loss, min=0.0, max=10.0)  # Ensure loss is finite and positive
+
+
+class AdversarialTraining:
+    """Adversarial training with pattern-aware perturbations."""
+    def __init__(self, epsilon: float = 0.01, alpha: float = 0.005, steps: int = 3):
+        self.epsilon = epsilon
+        self.alpha = alpha
+        self.steps = steps
+    
+    def perturb(
+        self,
+        model: nn.Module,
+        embeddings: torch.Tensor,
+        pattern_weights: torch.Tensor,
+        criterion: nn.Module
+    ) -> torch.Tensor:
+        # Initialize perturbation
+        delta = torch.zeros_like(embeddings, requires_grad=True)
+        
+        # Pattern-aware perturbation
+        pattern_importance = pattern_weights.mean(dim=-1, keepdim=True)
+        
+        for _ in range(self.steps):
+            # Forward pass
+            perturbed = embeddings + delta
+            outputs = model(perturbed)
+            # Use outputs directly for loss calculation
+            loss = criterion(outputs, outputs.detach())  # Self-distillation loss
+            
+            # Compute gradients
+            grad = torch.autograd.grad(loss, delta)[0]
+            
+            # Update perturbation
+            delta = delta + self.alpha * grad.sign() * pattern_importance
+            
+            # Project to epsilon ball
+            delta = torch.clamp(delta, -self.epsilon, self.epsilon)
+            delta = torch.clamp(embeddings + delta, 0, 1) - embeddings
+        
+        return delta.detach()
+
 
 def train_model(
     data: DataSplit,
     batch_size: int = 32,
-    epochs: int = 75,  # Increased epochs
+    epochs: int = 75,
     learning_rate: float = 0.0001,
-    early_stopping_patience: int = 15,  # Increased patience
+    early_stopping_patience: int = 15,
+    max_grad_norm: float = 1.0,
+    warmup_steps: int = 100,
+    contrastive_weight: float = 0.1,
+    adversarial_weight: float = 0.1
 ) -> Tuple[EnhancedTopicDriftDetector, Dict[str, list]]:
-    """Train the topic drift detection model."""
-    # Set device
+    """Train the model with advanced optimizations and augmentations."""
+    # Set device and enable cuda optimizations
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    if device.type == 'cuda':
+        torch.backends.cudnn.benchmark = True
+        torch.backends.cuda.matmul.allow_tf32 = True  # Allow TF32 for better performance
+        torch.backends.cudnn.allow_tf32 = True
+    
     print("\n=== Training Configuration ===")
     print(f"Device: {device}")
     print(f"Initial batch size: {batch_size}")
     print(f"Learning rate: {learning_rate}")
     print(f"Epochs: {epochs}")
     print(f"Early stopping patience: {early_stopping_patience}")
+    print(f"Max gradient norm: {max_grad_norm}")
+    print(f"Warmup steps: {warmup_steps}")
 
     # Create model save directory if it doesn't exist
     save_dir = Path("models")
     save_dir.mkdir(exist_ok=True)
     model_path = save_dir / "best_topic_drift_model.pt"
 
-    # Move data to device and ensure batch size compatibility
-    train_embeddings = data.train_embeddings.to(device)
-    train_labels = data.train_labels.to(device)
-    val_embeddings = data.val_embeddings.to(device)
-    val_labels = data.val_labels.to(device)
+    # Create datasets with data on the appropriate device
+    train_embeddings = data.train_embeddings.clone().to(device)
+    train_labels = data.train_labels.clone().to(device)
+    val_embeddings = data.val_embeddings.clone().to(device)
+    val_labels = data.val_labels.clone().to(device)
 
     print("\n=== Dataset Information ===")
     print(f"Training set shape: {train_embeddings.shape}")
     print(f"Validation set shape: {val_embeddings.shape}")
 
-    # Adjust batch size to ensure it divides dataset size
-    train_size = len(train_embeddings)
-    val_size = len(val_embeddings)
-    
-    # Calculate batch size that divides both train and val sizes
-    max_batch = min(batch_size, train_size // 2, val_size // 2)
-    adjusted_batch = max_batch
-    while train_size % adjusted_batch != 0 or val_size % adjusted_batch != 0:
-        adjusted_batch -= 1
-    batch_size = adjusted_batch
-    print(f"Adjusted batch size to: {batch_size}")
-
-    # Create data loaders with fixed batch size
+    # Create data loaders with fixed batch size and pin memory for faster GPU transfer
     train_dataset = TensorDataset(train_embeddings, train_labels)
     train_loader = DataLoader(
         train_dataset, 
         batch_size=batch_size, 
         shuffle=True,
-        drop_last=True
+        drop_last=True,
+        pin_memory=False,  # Data is already on GPU
+        num_workers=0,  # Disable multi-processing for now
+        persistent_workers=False
     )
 
     val_dataset = TensorDataset(val_embeddings, val_labels)
     val_loader = DataLoader(
         val_dataset, 
         batch_size=batch_size,
-        drop_last=True
+        drop_last=True,
+        pin_memory=False,  # Data is already on GPU
+        num_workers=0,  # Disable multi-processing for now
+        persistent_workers=False
     )
 
-    # Initialize model and training components
-    embedding_dim = data.train_embeddings.shape[1] // 8
+    # Initialize model and move to device
+    embedding_dim = train_embeddings.shape[1] // 8
     model = EnhancedTopicDriftDetector(embedding_dim).to(device)
+    
     criterion = nn.MSELoss()
     
-    # Add L2 regularization
+    # Enhanced optimizer configuration
     optimizer = torch.optim.AdamW(
         model.parameters(),
         lr=learning_rate,
-        weight_decay=0.01,  # L2 regularization
+        weight_decay=0.01,
         betas=(0.9, 0.999),
         eps=1e-8
     )
     
-    # Add learning rate scheduler
-    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+    # Initialize automatic mixed precision (AMP) scaler
+    scaler = torch.amp.GradScaler(enabled=device.type == 'cuda')  # Only enable for CUDA
+
+    # Learning rate scheduler with warmup
+    num_training_steps = epochs * len(train_loader)
+    lr_scheduler = get_cosine_schedule_with_warmup(
         optimizer,
-        mode='min',
-        factor=0.5,
-        patience=5,
-        verbose=True,
-        min_lr=1e-6
+        num_warmup_steps=warmup_steps,
+        num_training_steps=num_training_steps
     )
 
     # Initialize metrics
     rmse = torchmetrics.MeanSquaredError(squared=False).to(device)
     r2score = torchmetrics.R2Score().to(device)
 
-    # Initialize metrics tracking
+    # Initialize metrics tracking with learning rates
     metrics = {
         "train_losses": [],
         "train_rmse": [],
@@ -397,6 +655,7 @@ def train_model(
         "val_losses": [],
         "val_rmse": [],
         "val_r2": [],
+        "learning_rates": []
     }
 
     # Early stopping setup
@@ -404,10 +663,14 @@ def train_model(
     patience_counter = 0
     best_model_state = None
 
+    # Initialize augmentation and training components
+    window_aug = DynamicWindowAugmentation()
+    contrastive_loss = ContrastiveLearningLoss()
+    adversarial = AdversarialTraining()
+
     # Training loop with tqdm
     epoch_pbar = tqdm(range(epochs), desc="Training Progress")
     for epoch in epoch_pbar:
-        # Training phase
         model.train()
         train_loss = 0.0
         rmse.reset()
@@ -415,28 +678,105 @@ def train_model(
 
         batch_pbar = tqdm(train_loader, leave=False, desc=f"Epoch {epoch+1}")
         for batch_x, batch_y in batch_pbar:
-            # Forward pass
-            outputs = model(batch_x)  # Shape: [batch_size, 1]
-            loss = criterion(outputs, batch_y.unsqueeze(1))  # Ensure target has shape [batch_size, 1]
+            batch_x = batch_x.to(device, non_blocking=True)
+            batch_y = batch_y.to(device, non_blocking=True)
 
-            # Backward pass and optimize
+            # Apply dynamic window augmentation
+            batch_x_aug = window_aug(batch_x)
+
+            # Forward pass with mixed precision
+            with torch.amp.autocast('cuda' if device.type == 'cuda' else 'cpu'):
+                # Original forward pass
+                outputs = model(batch_x)
+                base_loss = criterion(outputs, batch_y.unsqueeze(1))
+
+                # Process augmented input
+                batch_x_aug = batch_x_aug.view(batch_x_aug.size(0), 8, -1)  # [batch, seq_len, input_dim]
+                batch_x_aug = model.embedding_processor(batch_x_aug)  # [batch, seq_len, hidden_dim]
+                batch_x_aug = batch_x_aug + model.position_encoder  # Add position encoding
+
+                # Apply attention blocks
+                for attn, ff in model.attention_blocks:
+                    batch_x_aug = attn(batch_x_aug) + batch_x_aug
+                    batch_x_aug = ff(batch_x_aug) + batch_x_aug
+
+                # Get pattern information
+                pattern_scales = model.hierarchical_detector(batch_x_aug)  # Now input is properly processed
+                transition_scores, marker_context = model.transition_detector(batch_x_aug)
+                pattern_features = torch.cat([
+                    pattern_scales[-1].mean(dim=1),  # [batch, hidden_dim * 2]
+                    marker_context.mean(dim=1)       # [batch, hidden_dim]
+                ], dim=-1)  # Result: [batch, hidden_dim * 3]
+
+                # Adapt pattern features dimensions
+                pattern_features = model.pattern_dim_adapter(pattern_features)  # [batch, hidden_dim * 3]
+
+                # Pattern classification
+                pattern_logits = model.pattern_classifier(pattern_features)
+
+                # Pattern interaction
+                pattern_weights = model.pattern_interaction(pattern_logits, batch_x_aug)
+
+                # Contrastive learning (scaled down)
+                contrast_loss = 0.01 * contrastive_loss(
+                    batch_x_aug.mean(dim=1),
+                    pattern_weights,
+                    transition_scores
+                )
+
+                # Adversarial training (scaled down)
+                delta = adversarial.perturb(model, batch_x, pattern_weights, criterion)
+                adv_outputs = model(batch_x + delta)
+                adv_loss = 0.01 * criterion(adv_outputs, batch_y.unsqueeze(1))
+
+                # Combined loss
+                loss = base_loss + contrast_loss + adv_loss
+
+            # Backward pass with gradient scaling
             optimizer.zero_grad()
-            loss.backward()
-            optimizer.step()
+            scaler.scale(loss).backward()
+            
+            # Gradient clipping
+            scaler.unscale_(optimizer)
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_grad_norm)
+            
+            # Optimizer step with gradient scaling
+            scaler.step(optimizer)
+            scaler.update()
 
-            # Update metrics - keep dimensions consistent
-            train_loss += loss.item()
-            rmse.update(outputs.view(-1), batch_y)  # Use view instead of squeeze to maintain dimensions
+            # Learning rate scheduling
+            lr_scheduler.step()
+            current_lr = optimizer.param_groups[0]['lr']
+
+            # Update metrics
+            train_loss += base_loss.item()
+            rmse.update(outputs.view(-1), batch_y)
             r2score.update(outputs.view(-1), batch_y)
             
-            batch_pbar.set_postfix({"batch_loss": f"{loss.item():.4f}"})
+            # Display current batch metrics
+            batch_pbar.set_postfix({
+                "base_loss": f"{base_loss.item():.4f}",
+                "total_loss": f"{loss.item():.4f}",
+                "rmse": f"{rmse.compute().item():.4f}",
+                "r2": f"{r2score.compute().item():.4f}",
+                "lr": f"{current_lr:.2e}"
+            })
 
         # Calculate training metrics
+        avg_train_loss = train_loss / len(train_loader)
+        train_rmse_val = rmse.compute().item()
+        train_r2_val = r2score.compute().item()
+        
         train_results = {
-            "loss": train_loss / len(train_loader),
-            "rmse": rmse.compute().item(),
-            "r2": r2score.compute().item(),
+            "loss": avg_train_loss,
+            "rmse": train_rmse_val,
+            "r2": train_r2_val,
         }
+        
+        print(f"\nEpoch {epoch+1} Training Metrics:")
+        print(f"Loss: {avg_train_loss:.4f}")
+        print(f"RMSE: {train_rmse_val:.4f}")
+        print(f"R²: {train_r2_val:.4f}")
 
         # Validation phase
         model.eval()
@@ -445,13 +785,17 @@ def train_model(
         r2score.reset()
 
         with torch.no_grad():
-            for batch_x, batch_y in val_loader:
-                outputs = model(batch_x)
-                loss = criterion(outputs, batch_y.unsqueeze(1))
-                val_loss += loss.item()
-                
-                rmse.update(outputs.view(-1), batch_y)
-                r2score.update(outputs.view(-1), batch_y)
+            with torch.amp.autocast('cuda' if device.type == 'cuda' else 'cpu'):
+                for batch_x, batch_y in val_loader:
+                    batch_x = batch_x.to(device, non_blocking=True)
+                    batch_y = batch_y.to(device, non_blocking=True)
+                    
+                    outputs = model(batch_x)
+                    loss = criterion(outputs, batch_y.unsqueeze(1))
+                    val_loss += loss.item()
+                    
+                    rmse.update(outputs.view(-1), batch_y)
+                    r2score.update(outputs.view(-1), batch_y)
 
         # Calculate validation metrics
         val_results = {
@@ -467,24 +811,29 @@ def train_model(
         metrics["val_losses"].append(val_results["loss"])
         metrics["val_rmse"].append(val_results["rmse"])
         metrics["val_r2"].append(val_results["r2"])
+        metrics["learning_rates"].append(current_lr)
 
         # Early stopping check
         if val_results["rmse"] < best_val_rmse:
             best_val_rmse = val_results["rmse"]
             best_model_state = model.state_dict()
             
-            # Save the best model
+            # Save best model with additional training info
             torch.save({
                 'epoch': epoch,
                 'model_state_dict': best_model_state,
                 'optimizer_state_dict': optimizer.state_dict(),
+                'scheduler_state_dict': lr_scheduler.state_dict(),
+                'scaler_state_dict': scaler.state_dict(),
                 'val_rmse': best_val_rmse,
                 'train_rmse': train_results["rmse"],
                 'hyperparameters': {
                     'batch_size': batch_size,
                     'learning_rate': learning_rate,
-                    'hidden_dim': model.embedding_processor[0].out_features,
-                    'num_heads': model.num_heads
+                    'hidden_dim': 512,  # Fixed value from model init
+                    'num_heads': model.num_heads,
+                    'max_grad_norm': max_grad_norm,
+                    'warmup_steps': warmup_steps
                 }
             }, model_path)
             print(f"\nSaved best model with validation RMSE: {best_val_rmse:.4f}")
@@ -493,14 +842,13 @@ def train_model(
             patience_counter += 1
 
         # Update progress bar
-        epoch_pbar.set_postfix(
-            {
-                "train_loss": f"{train_results['loss']:.4f}",
-                "train_rmse": f"{train_results['rmse']:.4f}",
-                "val_loss": f"{val_results['loss']:.4f}",
-                "val_rmse": f"{val_results['rmse']:.4f}",
-            }
-        )
+        epoch_pbar.set_postfix({
+            "train_loss": f"{train_results['loss']:.4f}",
+            "train_rmse": f"{train_results['rmse']:.4f}",
+            "val_loss": f"{val_results['loss']:.4f}",
+            "val_rmse": f"{val_results['rmse']:.4f}",
+            "lr": f"{current_lr:.2e}"
+        })
 
         if patience_counter >= early_stopping_patience:
             print(f"\nEarly stopping triggered after {epoch + 1} epochs")
@@ -512,6 +860,29 @@ def train_model(
         print(f"\nRestored best model with validation RMSE: {best_val_rmse:.4f}")
 
     return model, metrics
+
+
+def get_cosine_schedule_with_warmup(
+    optimizer: torch.optim.Optimizer,
+    num_warmup_steps: int,
+    num_training_steps: int,
+    num_cycles: float = 0.5,
+    last_epoch: int = -1,
+):
+    """
+    Create a schedule with a learning rate that decreases following the values of the cosine function between the
+    initial lr set in the optimizer to 0, after a warmup period during which it increases linearly between 0 and the
+    initial lr set in the optimizer.
+    """
+    def lr_lambda(current_step):
+        # Warmup
+        if current_step < num_warmup_steps:
+            return float(current_step) / float(max(1, num_warmup_steps))
+        # Cosine decay
+        progress = float(current_step - num_warmup_steps) / float(max(1, num_training_steps - num_warmup_steps))
+        return max(0.0, 0.5 * (1.0 + math.cos(math.pi * float(num_cycles) * 2.0 * progress)))
+
+    return torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda, last_epoch)
 
 
 def evaluate_model(
@@ -729,26 +1100,6 @@ def plot_prediction_distribution(
     plt.show()
 
 
-class TransitionPatternModule(nn.Module):
-    def __init__(self, hidden_dim: int):
-        super().__init__()
-        
-        # Pattern weights based on our analysis
-        self.pattern_weights = {
-            "gentle_wave": (0.10, 0.16),    # Low drift range
-            "single_peak": (0.13, 0.19),    # Medium drift range
-            "ascending_stairs": (0.16, 0.22) # High drift range
-        }
-        
-        # Pattern detection layers
-        self.pattern_detector = nn.LSTM(
-            input_size=hidden_dim,
-            hidden_size=hidden_dim // 2,
-            num_layers=2,
-            bidirectional=True
-        )
-
-
 def train_with_patterns(
     model: EnhancedTopicDriftDetector,
     data: DataSplit,
@@ -780,13 +1131,13 @@ def main():
     # Load conversation data from Hugging Face
     conversation_data = load_from_huggingface()
 
-    # Prepare training data with splits
+    # Prepare training data with splits, using cached embeddings
     data = prepare_training_data(
         conversation_data,
         window_size=8,
         batch_size=32,
         max_workers=16,
-        force_recompute=True,  # Use cached data if available
+        force_recompute=False,  # Use cached data if available
     )
 
     # Train model with updated parameters
@@ -796,6 +1147,10 @@ def main():
         epochs=75,      # Increased epochs
         learning_rate=0.0001,
         early_stopping_patience=15,  # Increased patience
+        max_grad_norm=1.0,  # For gradient clipping
+        warmup_steps=100,     # Warmup steps for learning rate
+        contrastive_weight=0.1,
+        adversarial_weight=0.1
     )
 
     # Get device
