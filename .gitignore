@@ -19,12 +19,13 @@ wheels/
 *.egg-info/
 .installed.cfg
 *.egg
-.venv/
 
 # Virtual Environment
+.env
+.venv
+env/
 venv/
 ENV/
-env/
 
 # IDE
 .idea/
@@ -32,24 +33,15 @@ env/
 *.swp
 *.swo
 
-# Testing
-.coverage
-coverage.xml
-htmlcov/
-.pytest_cache/
-.mypy_cache/
-
 # Project specific
+models/
+*.pt
+*.pth
+*.ckpt
+*.png
+*.txt
+
+# Logs
 *.log
-.env
-.env.*
-!.env.example
-
-# Redis
-dump.rdb
-
-# Misc
-.DS_Store
-.directory
-.Trash-*
+logs/
 

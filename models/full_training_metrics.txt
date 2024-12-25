@@ -1,8 +1,0 @@
-=== Full Training Results ===
-Best Validation RMSE: 0.0107
-Best Validation R²: 0.8867
-
-=== Test Set Results ===
-Loss: 0.0002
-RMSE: 0.0129
-R²: 0.8373
