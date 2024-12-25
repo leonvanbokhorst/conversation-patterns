@@ -44,6 +44,7 @@ dependencies = [
     "torchmetrics>=0.11.0",
     "seaborn>=0.12.2",
     "matplotlib>=3.7.0",
+    "datasets>=2.14.0",
 ]
 
 [project.optional-dependencies]
