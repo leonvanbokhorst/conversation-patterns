@@ -162,7 +162,7 @@ class ConversationalDatasetBuilder:
         }
         
         # 3. Balance each source
-        total_target = 1000  # Target total conversations
+        total_target = 8000  # Increased target total conversations
         
         for source, conversations in dataset.items():
             # Sort by quality score
@@ -348,7 +348,7 @@ class ConversationalDatasetBuilder:
             emotions = dialogue['emotion']
             
             # Skip if too short
-            if len(utterances) < 3:
+            if len(utterances) < 2:  # Reduced minimum length to capture more examples
                 continue
                 
             # Create conversation turns
@@ -358,8 +358,12 @@ class ConversationalDatasetBuilder:
             topics = ["General Conversation"]  # Default topic
             
             for i, (utt, act, emotion) in enumerate(zip(utterances, acts, emotions)):
+                # Skip empty or very short utterances
+                if not utt or len(utt.split()) < 2:
+                    continue
+                    
                 # Detect topic transitions based on dialogue acts and emotions
-                if i > 0:
+                if i > 0 and turns:  # Check if we have previous turns
                     prev_act = acts[i-1]
                     prev_emotion = emotions[i-1]
                     
@@ -374,7 +378,7 @@ class ConversationalDatasetBuilder:
                     has_semantic_shift = self._detect_semantic_shift(turns[-1].text, utt)
                     
                     if topic_markers or has_act_transition or has_emotion_change or has_semantic_shift:
-                        transition_points.append(i)
+                        transition_points.append(len(turns))  # Use actual turn index
                         transition_types.append("smooth" if topic_markers else "semantic")
                         
                         # Try to extract subtopic
@@ -392,6 +396,10 @@ class ConversationalDatasetBuilder:
                 )
                 turns.append(turn)
             
+            # Skip if too few valid turns after filtering
+            if len(turns) < 2:
+                continue
+                
             # Create conversation object
             conversation = Conversation(
                 turns=turns,
@@ -403,11 +411,13 @@ class ConversationalDatasetBuilder:
                 quality_score=self._compute_quality_score(turns, transition_points)
             )
             
-            conversations.append(conversation)
+            # Only add high-quality conversations
+            if conversation.quality_score >= 0.5:  # Reduced threshold to capture more examples
+                conversations.append(conversation)
             
             # Progress update
             if (idx + 1) % 1000 == 0:
-                print(f"Processed {idx + 1} dialogues...")
+                print(f"Processed {idx + 1} dialogues, found {len(conversations)} valid conversations...")
         
         print(f"Processed {len(conversations)} valid conversations from DailyDialog")
         return conversations
@@ -1083,7 +1093,7 @@ class ConversationalDatasetBuilder:
             emotions = dialogue['emotion']
             
             # Skip if too short
-            if len(utterances) < 3:
+            if len(utterances) < 2:  # Reduced minimum length to capture more examples
                 continue
                 
             # Create conversation turns
@@ -1093,8 +1103,12 @@ class ConversationalDatasetBuilder:
             topics = ["General Conversation"]  # Default topic
             
             for i, (utt, act, emotion) in enumerate(zip(utterances, acts, emotions)):
+                # Skip empty or very short utterances
+                if not utt or len(utt.split()) < 2:
+                    continue
+                    
                 # Detect topic transitions based on dialogue acts and emotions
-                if i > 0:
+                if i > 0 and turns:  # Check if we have previous turns
                     prev_act = acts[i-1]
                     prev_emotion = emotions[i-1]
                     
@@ -1109,7 +1123,7 @@ class ConversationalDatasetBuilder:
                     has_semantic_shift = self._detect_semantic_shift(turns[-1].text, utt)
                     
                     if topic_markers or has_act_transition or has_emotion_change or has_semantic_shift:
-                        transition_points.append(i)
+                        transition_points.append(len(turns))  # Use actual turn index
                         transition_types.append("smooth" if topic_markers else "semantic")
                         
                         # Try to extract subtopic
@@ -1127,6 +1141,10 @@ class ConversationalDatasetBuilder:
                 )
                 turns.append(turn)
             
+            # Skip if too few valid turns after filtering
+            if len(turns) < 2:
+                continue
+                
             # Create conversation object
             conversation = Conversation(
                 turns=turns,
@@ -1138,11 +1156,13 @@ class ConversationalDatasetBuilder:
                 quality_score=self._compute_quality_score(turns, transition_points)
             )
             
-            conversations.append(conversation)
+            # Only add high-quality conversations
+            if conversation.quality_score >= 0.5:  # Reduced threshold to capture more examples
+                conversations.append(conversation)
             
             # Progress update
             if (idx + 1) % 1000 == 0:
-                print(f"Processed {idx + 1} dialogues...")
+                print(f"Processed {idx + 1} dialogues, found {len(conversations)} valid conversations...")
         
         print(f"Processed {len(conversations)} valid conversations from DailyDialog")
         return conversations 
