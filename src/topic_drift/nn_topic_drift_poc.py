@@ -9,6 +9,7 @@ import torchmetrics
 import matplotlib.pyplot as plt
 import seaborn as sns
 import numpy as np
+from pathlib import Path
 
 # Linguistic markers for topic transitions
 TRANSITION_MARKERS = [
@@ -34,88 +35,238 @@ class EnhancedTopicDriftDetector(nn.Module):
         """
         super().__init__()
         self.input_dim = input_dim
+        self._has_printed_dims = False  # Add flag for dimension printing
+        
+        # Define attention parameters first
+        self.num_heads = 4
+        self.head_dim = hidden_dim // self.num_heads
+        
+        print("\n=== Model Architecture ===")
+        print(f"Input dimension: {input_dim}")
+        print(f"Hidden dimension: {hidden_dim}")
+        print(f"Number of attention heads: {self.num_heads}")
+        print(f"Head dimension: {self.head_dim}")
 
-        # Embedding processor
+        # Embedding processor with residual connection
         self.embedding_processor = nn.Sequential(
             nn.Linear(input_dim, hidden_dim),
             nn.LayerNorm(hidden_dim),
             nn.ReLU(),
-            nn.Dropout(0.1)
+            nn.Dropout(0.2),  # Increased dropout
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.LayerNorm(hidden_dim),
+            nn.ReLU(),
+            nn.Dropout(0.2)
         )
 
-        # Multi-level attention
-        self.local_attention = nn.Sequential(
-            nn.Linear(hidden_dim, hidden_dim // 2),
-            nn.ReLU(),
-            nn.Linear(hidden_dim // 2, 1),
-            nn.Softmax(dim=1)
-        )
+        # Dynamic multi-head attention
+        self.local_attention = nn.ModuleList([
+            nn.Sequential(
+                nn.Linear(hidden_dim, self.head_dim),
+                nn.ReLU(),
+                nn.Linear(self.head_dim, 1),
+                nn.Softmax(dim=1)
+            ) for _ in range(self.num_heads)
+        ])
         
-        # Global context attention
+        # Global context attention with position encoding
+        self.position_encoder = nn.Parameter(torch.randn(1, 8, hidden_dim))  # 8 is window_size
         self.global_attention = nn.Sequential(
-            nn.Linear(hidden_dim, hidden_dim // 2),
-            nn.Tanh(),  # Better for long-range dependencies
-            nn.Linear(hidden_dim // 2, 1),
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.Tanh(),
+            nn.Linear(hidden_dim, self.num_heads),
             nn.Softmax(dim=1)
         )
         
-        # Linguistic marker detection
-        self.marker_detector = nn.Sequential(
-            nn.Linear(input_dim, hidden_dim // 4),
-            nn.ReLU(),
-            nn.Linear(hidden_dim // 4, len(TRANSITION_MARKERS)),
-            nn.Sigmoid()
-        )
-
-        # Pattern detection
+        # Enhanced pattern detection
         self.pattern_detector = nn.LSTM(
             input_size=hidden_dim,
-            hidden_size=hidden_dim // 2,
-            num_layers=2,
-            bidirectional=True
+            hidden_size=hidden_dim,
+            num_layers=3,  # Increased layers
+            bidirectional=True,
+            dropout=0.2
         )
 
-        # Final regression layer
-        self.regressor = nn.Sequential(
-            nn.Linear(hidden_dim, hidden_dim // 2),
+        # Pattern classifier
+        self.pattern_classifier = nn.Sequential(
+            nn.Linear(2 * hidden_dim, hidden_dim),  # 2* for bidirectional
             nn.ReLU(),
-            nn.Dropout(0.1),
+            nn.Dropout(0.2),
+            nn.Linear(hidden_dim, len(self.get_pattern_types())),
+            nn.Softmax(dim=-1)
+        )
+
+        # Dynamic weight generator
+        self.weight_generator = nn.Sequential(
+            nn.Linear(2 * hidden_dim, hidden_dim),
+            nn.ReLU(),
+            nn.Linear(hidden_dim, 3),  # Weights for local, global, and pattern attention
+            nn.Softmax(dim=-1)
+        )
+
+        # Final regression with deeper network
+        self.regressor = nn.Sequential(
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.LayerNorm(hidden_dim),
+            nn.ReLU(),
+            nn.Dropout(0.2),
+            nn.Linear(hidden_dim, hidden_dim // 2),
+            nn.LayerNorm(hidden_dim // 2),
+            nn.ReLU(),
+            nn.Dropout(0.2),
             nn.Linear(hidden_dim // 2, 1),
             nn.Sigmoid()
         )
+
+    def get_pattern_types(self):
+        return [
+            "maintain",      # No drift
+            "gentle_wave",   # Subtle topic evolution
+            "single_peak",   # One clear transition
+            "multi_peak",    # Multiple transitions
+            "ascending",     # Gradually increasing drift
+            "descending",    # Gradually decreasing drift
+            "abrupt"        # Sudden topic change
+        ]
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Enhanced forward pass with multi-level attention."""
         batch_size = x.shape[0]
         window_size = 8
         
-        # Reshape input
-        x = x.view(batch_size, window_size, self.input_dim)
-        
-        # Process embeddings
-        processed = self.embedding_processor(x)
-        
-        # Multi-level attention
-        local_weights = self.local_attention(processed)
-        global_weights = self.global_attention(processed)
-        
-        # Combine attention weights based on pattern detection
-        pattern_scores = self.pattern_detector(processed)[0]
-        attention_weights = (
-            0.7 * local_weights +  # Local context
-            0.3 * global_weights   # Global context
-        ) * pattern_scores
-        
-        # Detect semantic bridges
-        transitions = self.semantic_bridge_detection(processed)
-        
-        # Final drift score computation
-        context = torch.sum(attention_weights * processed, dim=1)
-        base_score = self.regressor(context)
-        
-        # Adjust score based on transition patterns
-        final_score = base_score * (1 + transitions.mean(dim=1, keepdim=True))
-        
+        # Only print dimensions on first forward pass
+        if not self._has_printed_dims:
+            print("\n=== Forward Pass Dimensions ===")
+            print(f"Input shape: {x.shape}")
+            
+            # Reshape and process embeddings
+            x = x.view(batch_size, window_size, self.input_dim)
+            print(f"Reshaped input: {x.shape}")
+            
+            processed = self.embedding_processor(x)
+            print(f"Processed embeddings: {processed.shape}")
+            
+            # Add positional encoding
+            processed = processed + self.position_encoder
+            print(f"After positional encoding: {processed.shape}")
+            
+            # Multi-head local attention
+            local_attentions = []
+            for head_idx, head in enumerate(self.local_attention):
+                head_attn = head(processed)
+                print(f"Head {head_idx} attention: {head_attn.shape}")
+                local_attentions.append(head_attn)
+            local_attention = torch.cat(local_attentions, dim=2)
+            print(f"Combined local attention: {local_attention.shape}")
+            
+            # Global attention with position awareness
+            global_attention = self.global_attention(processed)
+            print(f"Global attention: {global_attention.shape}")
+            
+            # Enhanced pattern detection with proper batch handling
+            lstm_input = processed.transpose(0, 1)
+            pattern_output, (h_n, _) = self.pattern_detector(lstm_input)
+            pattern_output = pattern_output.transpose(0, 1)
+            print(f"Pattern detector output: {pattern_output.shape}")
+            print(f"Pattern hidden state: {h_n.shape}")
+            
+            # Get last forward and backward states from last layer
+            num_layers = 3
+            num_directions = 2
+            last_layer_forward = h_n[2 * num_layers - 2]
+            last_layer_backward = h_n[2 * num_layers - 1]
+            pattern_hidden = torch.cat([last_layer_forward, last_layer_backward], dim=1)
+            print(f"Pattern hidden concatenated: {pattern_hidden.shape}")
+            
+            pattern_probs = self.pattern_classifier(pattern_hidden)
+            print(f"Pattern probabilities: {pattern_probs.shape}")
+            
+            weights = self.weight_generator(pattern_hidden)
+            print(f"Generated weights: {weights.shape}")
+            
+            local_context = local_attention.mean(dim=2)
+            global_context = global_attention.mean(dim=2)
+            pattern_context = pattern_output.mean(dim=2)
+            print(f"Context shapes - Local: {local_context.shape}, Global: {global_context.shape}, Pattern: {pattern_context.shape}")
+            
+            contexts = torch.stack([local_context, global_context, pattern_context], dim=2)
+            print(f"Stacked contexts: {contexts.shape}")
+            
+            weights = weights.unsqueeze(1)
+            print(f"Expanded weights: {weights.shape}")
+            
+            attention = torch.bmm(contexts, weights.transpose(1, 2))
+            attention = attention.softmax(dim=1)
+            print(f"Final attention: {attention.shape}")
+            
+            transitions = self.semantic_bridge_detection(processed)
+            print(f"Transitions: {transitions.shape}")
+            
+            context = torch.sum(attention * processed, dim=1)
+            print(f"Final context: {context.shape}")
+            
+            base_score = self.regressor(context)
+            print(f"Base score: {base_score.shape}")
+            
+            pattern_weights = torch.tensor(
+                [0.8, 0.9, 1.0, 1.1, 1.2, 0.9, 1.3],
+                device=pattern_probs.device
+            ).unsqueeze(0)
+            
+            pattern_factor = torch.sum(pattern_probs * pattern_weights, dim=1, keepdim=True)
+            transition_factor = 1 + transitions.mean(dim=1, keepdim=True)
+            final_score = base_score * pattern_factor * transition_factor
+            print(f"Final score: {final_score.shape}\n")
+            
+            self._has_printed_dims = True  # Set flag to True after first print
+        else:
+            # Regular forward pass without printing
+            x = x.view(batch_size, window_size, self.input_dim)
+            processed = self.embedding_processor(x)
+            processed = processed + self.position_encoder
+            
+            local_attentions = []
+            for head in self.local_attention:
+                head_attn = head(processed)
+                local_attentions.append(head_attn)
+            local_attention = torch.cat(local_attentions, dim=2)
+            
+            global_attention = self.global_attention(processed)
+            
+            lstm_input = processed.transpose(0, 1)
+            pattern_output, (h_n, _) = self.pattern_detector(lstm_input)
+            pattern_output = pattern_output.transpose(0, 1)
+            
+            last_layer_forward = h_n[2 * 3 - 2]
+            last_layer_backward = h_n[2 * 3 - 1]
+            pattern_hidden = torch.cat([last_layer_forward, last_layer_backward], dim=1)
+            
+            pattern_probs = self.pattern_classifier(pattern_hidden)
+            weights = self.weight_generator(pattern_hidden)
+            
+            local_context = local_attention.mean(dim=2)
+            global_context = global_attention.mean(dim=2)
+            pattern_context = pattern_output.mean(dim=2)
+            
+            contexts = torch.stack([local_context, global_context, pattern_context], dim=2)
+            weights = weights.unsqueeze(1)
+            
+            attention = torch.bmm(contexts, weights.transpose(1, 2))
+            attention = attention.softmax(dim=1)
+            
+            transitions = self.semantic_bridge_detection(processed)
+            context = torch.sum(attention * processed, dim=1)
+            base_score = self.regressor(context)
+            
+            pattern_weights = torch.tensor(
+                [0.8, 0.9, 1.0, 1.1, 1.2, 0.9, 1.3],
+                device=pattern_probs.device
+            ).unsqueeze(0)
+            
+            pattern_factor = torch.sum(pattern_probs * pattern_weights, dim=1, keepdim=True)
+            transition_factor = 1 + transitions.mean(dim=1, keepdim=True)
+            final_score = base_score * pattern_factor * transition_factor
+            
         return torch.clamp(final_score, 0, 1)
 
     def semantic_bridge_detection(self, embeddings: torch.Tensor) -> torch.Tensor:
@@ -153,37 +304,61 @@ def train_model(
     learning_rate: float = 0.001,
     early_stopping_patience: int = 3,
 ) -> Tuple[EnhancedTopicDriftDetector, Dict[str, list]]:
-    """Train the topic drift detection model.
-
-    Args:
-        data: DataSplit object containing all data splits
-        batch_size: Batch size for training
-        epochs: Number of epochs to train
-        learning_rate: Learning rate for optimizer
-        early_stopping_patience: Number of epochs to wait for improvement
-
-    Returns:
-        Tuple[EnhancedTopicDriftDetector, dict]: Trained model and training metrics dictionary
-    """
+    """Train the topic drift detection model."""
     # Set device
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    print(f"Using device: {device}")
+    print("\n=== Training Configuration ===")
+    print(f"Device: {device}")
+    print(f"Initial batch size: {batch_size}")
+    print(f"Learning rate: {learning_rate}")
+    print(f"Epochs: {epochs}")
+    print(f"Early stopping patience: {early_stopping_patience}")
 
-    # Move data to device
+    # Create model save directory if it doesn't exist
+    save_dir = Path("models")
+    save_dir.mkdir(exist_ok=True)
+    model_path = save_dir / "best_topic_drift_model.pt"
+
+    # Move data to device and ensure batch size compatibility
     train_embeddings = data.train_embeddings.to(device)
     train_labels = data.train_labels.to(device)
     val_embeddings = data.val_embeddings.to(device)
     val_labels = data.val_labels.to(device)
 
-    # Create data loaders
+    print("\n=== Dataset Information ===")
+    print(f"Training set shape: {train_embeddings.shape}")
+    print(f"Validation set shape: {val_embeddings.shape}")
+
+    # Adjust batch size to ensure it divides dataset size
+    train_size = len(train_embeddings)
+    val_size = len(val_embeddings)
+    
+    # Calculate batch size that divides both train and val sizes
+    max_batch = min(batch_size, train_size // 2, val_size // 2)
+    adjusted_batch = max_batch
+    while train_size % adjusted_batch != 0 or val_size % adjusted_batch != 0:
+        adjusted_batch -= 1
+    batch_size = adjusted_batch
+    print(f"Adjusted batch size to: {batch_size}")
+
+    # Create data loaders with fixed batch size
     train_dataset = TensorDataset(train_embeddings, train_labels)
-    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
+    train_loader = DataLoader(
+        train_dataset, 
+        batch_size=batch_size, 
+        shuffle=True,
+        drop_last=True
+    )
 
     val_dataset = TensorDataset(val_embeddings, val_labels)
-    val_loader = DataLoader(val_dataset, batch_size=batch_size)
+    val_loader = DataLoader(
+        val_dataset, 
+        batch_size=batch_size,
+        drop_last=True
+    )
 
     # Initialize model and training components
-    embedding_dim = data.train_embeddings.shape[1] // 8  # Using window_size=8
+    embedding_dim = data.train_embeddings.shape[1] // 8
     model = EnhancedTopicDriftDetector(embedding_dim).to(device)
     criterion = nn.MSELoss()
     optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
@@ -219,18 +394,18 @@ def train_model(
         batch_pbar = tqdm(train_loader, leave=False, desc=f"Epoch {epoch+1}")
         for batch_x, batch_y in batch_pbar:
             # Forward pass
-            outputs = model(batch_x)
-            loss = criterion(outputs, batch_y.unsqueeze(1))
+            outputs = model(batch_x)  # Shape: [batch_size, 1]
+            loss = criterion(outputs, batch_y.unsqueeze(1))  # Ensure target has shape [batch_size, 1]
 
             # Backward pass and optimize
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
 
-            # Update metrics
+            # Update metrics - keep dimensions consistent
             train_loss += loss.item()
-            rmse.update(outputs.squeeze(), batch_y)
-            r2score.update(outputs.squeeze(), batch_y)
+            rmse.update(outputs.view(-1), batch_y)  # Use view instead of squeeze to maintain dimensions
+            r2score.update(outputs.view(-1), batch_y)
             
             batch_pbar.set_postfix({"batch_loss": f"{loss.item():.4f}"})
 
@@ -253,8 +428,8 @@ def train_model(
                 loss = criterion(outputs, batch_y.unsqueeze(1))
                 val_loss += loss.item()
                 
-                rmse.update(outputs.squeeze(), batch_y)
-                r2score.update(outputs.squeeze(), batch_y)
+                rmse.update(outputs.view(-1), batch_y)
+                r2score.update(outputs.view(-1), batch_y)
 
         # Calculate validation metrics
         val_results = {
@@ -275,6 +450,21 @@ def train_model(
         if val_results["rmse"] < best_val_rmse:
             best_val_rmse = val_results["rmse"]
             best_model_state = model.state_dict()
+            # Save the best model
+            torch.save({
+                'epoch': epoch,
+                'model_state_dict': best_model_state,
+                'optimizer_state_dict': optimizer.state_dict(),
+                'val_rmse': best_val_rmse,
+                'train_rmse': train_results["rmse"],
+                'hyperparameters': {
+                    'batch_size': batch_size,
+                    'learning_rate': learning_rate,
+                    'hidden_dim': model.embedding_processor[0].out_features,
+                    'num_heads': model.num_heads
+                }
+            }, model_path)
+            print(f"\nSaved best model with validation RMSE: {best_val_rmse:.4f}")
             patience_counter = 0
         else:
             patience_counter += 1
@@ -296,6 +486,7 @@ def train_model(
     # Restore best model
     if best_model_state is not None:
         model.load_state_dict(best_model_state)
+        print(f"\nRestored best model with validation RMSE: {best_val_rmse:.4f}")
 
     return model, metrics
 
@@ -330,8 +521,8 @@ def evaluate_model(
             loss = criterion(outputs, batch_y.unsqueeze(1))
             total_loss += loss.item()
 
-            rmse.update(outputs.squeeze(), batch_y)
-            r2score.update(outputs.squeeze(), batch_y)
+            rmse.update(outputs.view(-1), batch_y)
+            r2score.update(outputs.view(-1), batch_y)
 
     return {
         "loss": total_loss / len(dataloader),
@@ -403,17 +594,32 @@ def visualize_attention(
         x = sample_windows.to(device)
         x = x.view(batch_size, window_size, model.input_dim)
         processed = model.embedding_processor(x)
+        processed = processed + model.position_encoder
         
-        # Get multi-level attention weights
-        local_weights = model.local_attention(processed)
-        global_weights = model.global_attention(processed)
-        pattern_scores = model.pattern_detector(processed)[0]
+        # Get multi-head local attention
+        local_attentions = []
+        for head in model.local_attention:
+            head_attn = head(processed)
+            local_attentions.append(head_attn)
+        local_attention = torch.cat(local_attentions, dim=2)
         
-        # Combine attention weights
+        # Get global attention
+        global_attention = model.global_attention(processed)
+        
+        # Get pattern detection
+        pattern_output, (h_n, _) = model.pattern_detector(processed)
+        
+        # Get pattern weights
+        pattern_hidden = torch.cat([h_n[-2], h_n[-1]], dim=1)
+        weights = model.weight_generator(pattern_hidden)
+        weights = weights.unsqueeze(1).expand(-1, window_size, -1)
+        
+        # Combine attention mechanisms
         attention_weights = (
-            0.7 * local_weights +  # Local context
-            0.3 * global_weights   # Global context
-        ) * pattern_scores
+            weights[:, :, 0:1] * local_attention.mean(dim=2, keepdim=True) +
+            weights[:, :, 1:2] * global_attention.mean(dim=2, keepdim=True) +
+            weights[:, :, 2:3] * pattern_output.mean(dim=2, keepdim=True)
+        )
         
         attention_weights = attention_weights.cpu().numpy()
         predictions = model(sample_windows.to(device)).squeeze().cpu().numpy()
@@ -546,43 +752,48 @@ def train_with_patterns(
 
 def main():
     """Load data, prepare it, and train the model."""
+    print("\n=== Running Full Training ===")
+    
     # Load conversation data from Hugging Face
     conversation_data = load_from_huggingface()
 
     # Prepare training data with splits
     data = prepare_training_data(
         conversation_data,
-        window_size=8,  # Use 8 turns for context
-        batch_size=32,  # Reduced batch size for larger windows
-        max_workers=8,
-        force_recompute=True,  # Force recompute since we changed the data format
+        window_size=8,
+        batch_size=32,
+        max_workers=16,
+        force_recompute=False,  # Use cached data if available
     )
 
-    # Train model with enhanced metrics
+    # Train model with full parameters
     model, metrics = train_model(
         data,
-        batch_size=16,  # Reduced batch size for training due to larger windows
-        epochs=20,  # Increased epochs for better convergence
-        learning_rate=0.0005,  # Reduced learning rate for stability
-        early_stopping_patience=5,  # Increased patience for better convergence
+        batch_size=32,
+        epochs=50,              # Increased epochs for better convergence
+        learning_rate=0.0001,   # Lower learning rate for stability
+        early_stopping_patience=10,  # More patience to find global optimum
     )
 
     # Get device
     device = next(model.parameters()).device
 
+    # Create test dataset with same batch size as training
+    test_dataset = TensorDataset(data.test_embeddings.to(device), data.test_labels.to(device))
+    test_loader = DataLoader(
+        test_dataset,
+        batch_size=32,
+        drop_last=True
+    )
+
     # Plot training curves
-    plot_training_curves(metrics)
+    plot_training_curves(metrics, save_path="models/full_training_curves.png")
 
     # Evaluate on test set
-    test_dataset = TensorDataset(data.test_embeddings.to(device), data.test_labels.to(device))
-    test_loader = DataLoader(test_dataset, batch_size=16)  # Reduced batch size
     test_results = evaluate_model(model, test_loader, device)
 
-    # Plot prediction distribution
-    plot_prediction_distribution(model, test_loader, device)
-
     # Print final metrics
-    print("\nTraining Results:")
+    print("\nFull Training Results:")
     print(f"Best Validation RMSE: {min(metrics['val_rmse']):.4f}")
     print(f"Best Validation R²: {max(metrics['val_r2']):.4f}")
     print("\nTest Set Results:")
@@ -590,49 +801,16 @@ def main():
     print(f"RMSE: {test_results['rmse']:.4f}")
     print(f"R²: {test_results['r2']:.4f}")
 
-    # Get sample windows with their texts for attention visualization
-    print("\nAnalyzing attention patterns on sample conversations...")
-    
-    # Get a few interesting examples (high drift, low drift, medium drift)
-    test_preds = []
-    with torch.no_grad():
-        for batch_x, _ in test_loader:
-            batch_x = batch_x.to(device)
-            test_preds.extend(model(batch_x).squeeze().cpu().numpy())
-    test_preds = np.array(test_preds)
-    
-    # Get indices for interesting examples
-    high_drift_idx = np.argmax(data.test_labels.numpy())
-    low_drift_idx = np.argmin(data.test_labels.numpy())
-    med_drift_idx = np.argmin(np.abs(data.test_labels.numpy() - np.median(data.test_labels.numpy())))
-    
-    sample_indices = [low_drift_idx, med_drift_idx, high_drift_idx]
-    sample_windows = data.test_embeddings[sample_indices]
-    sample_scores = data.test_labels[sample_indices]
-    
-    # Get original texts from conversation data
-    sample_texts = []
-    for conv in conversation_data.conversations:
-        turns = conv["turns"]
-        if len(turns) >= 8:  # window_size = 8
-            for i in range(len(turns) - 8 + 1):
-                window_turns = turns[i : i + 8]
-                window_text = [turn[:100] + "..." if len(turn) > 100 else turn for turn in window_turns]
-                sample_texts.append(window_text)
-    
-    # Get texts for our selected windows
-    selected_texts = [sample_texts[idx] for idx in sample_indices]
-    
-    # Print example conversations
-    print("\nAnalyzing conversations with different drift levels:")
-    for i, (texts, score) in enumerate(zip(selected_texts, sample_scores)):
-        drift_level = "Low" if i == 0 else "Medium" if i == 1 else "High"
-        print(f"\n{drift_level} Drift (score: {score.item():.4f}):")
-        for j, text in enumerate(texts):
-            print(f"Turn {j+1}: {text}")
-    
-    # Visualize attention patterns
-    visualize_attention(model, sample_windows, selected_texts, sample_scores, device)
+    # Save final metrics
+    metrics_path = Path("models") / "full_training_metrics.txt"
+    with open(metrics_path, "w") as f:
+        f.write("=== Full Training Results ===\n")
+        f.write(f"Best Validation RMSE: {min(metrics['val_rmse']):.4f}\n")
+        f.write(f"Best Validation R²: {max(metrics['val_r2']):.4f}\n")
+        f.write("\n=== Test Set Results ===\n")
+        f.write(f"Loss: {test_results['loss']:.4f}\n")
+        f.write(f"RMSE: {test_results['rmse']:.4f}\n")
+        f.write(f"R²: {test_results['r2']:.4f}\n")
 
 
 if __name__ == "__main__":
