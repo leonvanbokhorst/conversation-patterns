@@ -47,74 +47,77 @@ class EnhancedTopicDriftDetector(nn.Module):
         print(f"Number of attention heads: {self.num_heads}")
         print(f"Head dimension: {self.head_dim}")
 
-        # Embedding processor with residual connection
+        # Embedding processor with residual connection and increased dropout
         self.embedding_processor = nn.Sequential(
             nn.Linear(input_dim, hidden_dim),
             nn.LayerNorm(hidden_dim),
             nn.ReLU(),
-            nn.Dropout(0.2),  # Increased dropout
+            nn.Dropout(0.35),  # Increased dropout
             nn.Linear(hidden_dim, hidden_dim),
             nn.LayerNorm(hidden_dim),
             nn.ReLU(),
-            nn.Dropout(0.2)
+            nn.Dropout(0.35)  # Increased dropout
         )
 
-        # Dynamic multi-head attention
+        # Dynamic multi-head attention with L2 regularization
         self.local_attention = nn.ModuleList([
             nn.Sequential(
-                nn.Linear(hidden_dim, self.head_dim),
+                nn.Linear(hidden_dim, self.head_dim, bias=False),  # Removed bias for regularization
                 nn.ReLU(),
-                nn.Linear(self.head_dim, 1),
+                nn.Linear(self.head_dim, 1, bias=False),  # Removed bias for regularization
                 nn.Softmax(dim=1)
             ) for _ in range(self.num_heads)
         ])
         
         # Global context attention with position encoding
-        self.position_encoder = nn.Parameter(torch.randn(1, 8, hidden_dim))  # 8 is window_size
+        self.position_encoder = nn.Parameter(torch.randn(1, 8, hidden_dim))
         self.global_attention = nn.Sequential(
-            nn.Linear(hidden_dim, hidden_dim),
+            nn.Linear(hidden_dim, hidden_dim, bias=False),  # Removed bias
             nn.Tanh(),
-            nn.Linear(hidden_dim, self.num_heads),
+            nn.Dropout(0.35),  # Added dropout
+            nn.Linear(hidden_dim, self.num_heads, bias=False),
             nn.Softmax(dim=1)
         )
         
-        # Enhanced pattern detection
+        # Enhanced pattern detection with increased regularization
         self.pattern_detector = nn.LSTM(
             input_size=hidden_dim,
             hidden_size=hidden_dim,
-            num_layers=3,  # Increased layers
+            num_layers=3,
             bidirectional=True,
-            dropout=0.2
+            dropout=0.35,  # Increased dropout
+            bias=False  # Removed bias for regularization
         )
 
-        # Pattern classifier
+        # Pattern classifier with regularization
         self.pattern_classifier = nn.Sequential(
-            nn.Linear(2 * hidden_dim, hidden_dim),  # 2* for bidirectional
+            nn.Linear(2 * hidden_dim, hidden_dim, bias=False),
             nn.ReLU(),
-            nn.Dropout(0.2),
-            nn.Linear(hidden_dim, len(self.get_pattern_types())),
+            nn.Dropout(0.35),
+            nn.Linear(hidden_dim, len(self.get_pattern_types()), bias=False),
             nn.Softmax(dim=-1)
         )
 
-        # Dynamic weight generator
+        # Dynamic weight generator with regularization
         self.weight_generator = nn.Sequential(
-            nn.Linear(2 * hidden_dim, hidden_dim),
+            nn.Linear(2 * hidden_dim, hidden_dim, bias=False),
             nn.ReLU(),
-            nn.Linear(hidden_dim, 3),  # Weights for local, global, and pattern attention
+            nn.Dropout(0.35),
+            nn.Linear(hidden_dim, 3, bias=False),
             nn.Softmax(dim=-1)
         )
 
-        # Final regression with deeper network
+        # Final regression with deeper network and increased regularization
         self.regressor = nn.Sequential(
-            nn.Linear(hidden_dim, hidden_dim),
+            nn.Linear(hidden_dim, hidden_dim, bias=False),
             nn.LayerNorm(hidden_dim),
             nn.ReLU(),
-            nn.Dropout(0.2),
-            nn.Linear(hidden_dim, hidden_dim // 2),
+            nn.Dropout(0.35),
+            nn.Linear(hidden_dim, hidden_dim // 2, bias=False),
             nn.LayerNorm(hidden_dim // 2),
             nn.ReLU(),
-            nn.Dropout(0.2),
-            nn.Linear(hidden_dim // 2, 1),
+            nn.Dropout(0.35),
+            nn.Linear(hidden_dim // 2, 1, bias=False),
             nn.Sigmoid()
         )
 
@@ -301,9 +304,9 @@ class EnhancedTopicDriftDetector(nn.Module):
 def train_model(
     data: DataSplit,
     batch_size: int = 32,
-    epochs: int = 10,
-    learning_rate: float = 0.001,
-    early_stopping_patience: int = 3,
+    epochs: int = 75,  # Increased epochs
+    learning_rate: float = 0.0001,
+    early_stopping_patience: int = 15,  # Increased patience
 ) -> Tuple[EnhancedTopicDriftDetector, Dict[str, list]]:
     """Train the topic drift detection model."""
     # Set device
@@ -362,7 +365,25 @@ def train_model(
     embedding_dim = data.train_embeddings.shape[1] // 8
     model = EnhancedTopicDriftDetector(embedding_dim).to(device)
     criterion = nn.MSELoss()
-    optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
+    
+    # Add L2 regularization
+    optimizer = torch.optim.AdamW(
+        model.parameters(),
+        lr=learning_rate,
+        weight_decay=0.01,  # L2 regularization
+        betas=(0.9, 0.999),
+        eps=1e-8
+    )
+    
+    # Add learning rate scheduler
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+        optimizer,
+        mode='min',
+        factor=0.5,
+        patience=5,
+        verbose=True,
+        min_lr=1e-6
+    )
 
     # Initialize metrics
     rmse = torchmetrics.MeanSquaredError(squared=False).to(device)
@@ -763,18 +784,18 @@ def main():
     data = prepare_training_data(
         conversation_data,
         window_size=8,
-        batch_size=64,
+        batch_size=32,
         max_workers=16,
-        force_recompute=False,  # Use cached data if available
+        force_recompute=True,  # Use cached data if available
     )
 
-    # Train model with full parameters
+    # Train model with updated parameters
     model, metrics = train_model(
         data,
-        batch_size=64,
-        epochs=50,              # Increased epochs for better convergence
-        learning_rate=0.0001,   # Lower learning rate for stability
-        early_stopping_patience=10,  # More patience to find global optimum
+        batch_size=32,  # Reduced batch size for better generalization
+        epochs=75,      # Increased epochs
+        learning_rate=0.0001,
+        early_stopping_patience=15,  # Increased patience
     )
 
     # Get device
