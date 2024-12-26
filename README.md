@@ -106,7 +106,7 @@ print(f"Topic drift score: {drift_score.item():.4f}")
 ## Training Details
 
 - Dataset: 6400 conversations (5120 train, 640 val, 640 test)
-- Repository: [leonvanbokhorst/topic-drift-v2](https://huggingface.co/leonvanbokhorst/topic-drift-v2)
+- Repository: [leonvanbokhorst/topic-drift-v2](https://huggingface.co/datasets/leonvanbokhorst/topic-drift-v2)
 - Window size: 8 turns
 - Batch size: 32
 - Learning rate: 0.0001
