@@ -21,6 +21,7 @@ wheels/
 *.egg
 .venv/
 cache/
+.DS_Store
 
 # Testing
 .coverage
