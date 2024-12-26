@@ -1,4 +1,6 @@
-# Topic Drift Detection
+# Topic Drift Detection in Conversation
+
+[![Test](https://github.com/leonvanbokhorst/conversational-patts/actions/workflows/test.yml/badge.svg)](https://github.com/leonvanbokhorst/conversational-patts/actions/workflows/test.yml)
 
 A PyTorch-based model for detecting topic drift in conversations using an efficient attention-based architecture.
 
@@ -32,7 +34,11 @@ This project implements a neural network model that detects topic drift in conve
 ## Installation
 
 ```bash
-pip install torch transformers huggingface_hub
+python -m venv .venv
+source .venv/bin/activate  # On Windows: .venv\Scripts\activate
+
+# Install dependencies
+pip install -e .
 ```
 
 ## Usage
@@ -49,7 +55,7 @@ def load_model(repo_id: str = "leonvanbokhorst/topic-drift-detector"):
     # Download latest model weights
     model_path = hf_hub_download(
         repo_id=repo_id,
-        filename="models/v20241226_112605/topic_drift_model.pt",
+        filename="models/v20241226_112605/topic_drift_model.pt", #latest
         force_download=True
     )
     
@@ -100,6 +106,7 @@ print(f"Topic drift score: {drift_score.item():.4f}")
 ## Training Details
 
 - Dataset: 6400 conversations (5120 train, 640 val, 640 test)
+- Repository: [leonvanbokhorst/topic-drift-v2](https://huggingface.co/leonvanbokhorst/topic-drift-v2)
 - Window size: 8 turns
 - Batch size: 32
 - Learning rate: 0.0001
