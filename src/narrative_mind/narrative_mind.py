@@ -101,6 +101,6 @@ class NarrativeMind:
             self.conversation_flow.append(f"Human: {input_text}")
 
             return parsed["response"]
-        except:
+        except Exception:
             print("\n❌ Failed to parse JSON response")
             return "Hmm, I need a moment to process that. Could you rephrase?"
