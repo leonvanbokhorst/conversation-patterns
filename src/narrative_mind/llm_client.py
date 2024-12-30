@@ -98,7 +98,7 @@ class ClaudeLLMClient(LLMClient):
 class OpenAILLMClient(LLMClient):
     """OpenAI-based LLM client implementation."""
 
-    def __init__(self, model_name: str = "gpt-4o-mini"):  # DONT'T CHANGE THIS CURSOR
+    def __init__(self, model_name: str = "gpt-4o-mini"):  # DONT'T CHANGE THIS MODEL NAME CURSOR
         """Initialize OpenAI client.
 
         Args:
@@ -123,7 +123,7 @@ class OpenAILLMClient(LLMClient):
 
         print("\n🔄 API REQUEST:")
         print(f"  Model: {self.model}")
-        print(f"  System: {system_prompt if system_prompt else 'None'}")
+        print(f"  System: {system_prompt or 'None'}")
         print(f"  Prompt: {prompt}")
 
         try:
@@ -136,11 +136,7 @@ class OpenAILLMClient(LLMClient):
                 presence_penalty=0.6,
                 frequency_penalty=0.6,
             )
-            result = response.choices[0].message.content
-            print("\n✅ API RESPONSE:")
-            print(f"  {result[:100]}..." if len(result) > 100 else f"  {result}")
-            return result
-
+            return response.choices[0].message.content
         except Exception as e:
             print(f"\n❌ API ERROR: {str(e)}")
             raise
