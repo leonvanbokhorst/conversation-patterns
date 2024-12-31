@@ -15,27 +15,15 @@ def format_time(start_time: float) -> str:
 
 async def initialize_mind() -> NarrativeMind:
     """Initialize NarrativeMind with OpenAI."""
-    try:
-        print("\nInitializing NarrativeMind...")
-        start_time = time.time()
-        mind = NarrativeMind(OpenAILLMClient())
-        print(f"Initialization completed in {format_time(start_time)}")
-        return mind
-    except Exception as e:
-        print(f"\nFailed to initialize OpenAI: {e}")
-        sys.exit(1)
+    return NarrativeMind(OpenAILLMClient())
 
 
 async def interactive_conversation(mind: NarrativeMind):
     """Run an interactive conversation with NarrativeMind."""
-    print("\n=== Starting New Conversation ===")
-    print("\nInitial mental model:", mind.mental_model)
-    print("\nType 'quit' to end the conversation.")
-    print("\n" + "=" * 50)
 
     try:
         while True:
-            user_input = input("\nYou: ").strip()
+            user_input = input("You: ").strip()
             if user_input.lower() in ["quit", "exit", "bye"]:
                 break
 
