@@ -42,7 +42,7 @@ class NarrativeMind:
         # Generate more natural, conversational response
         prompt = f"""
         Current input: {input_text}
-        Your memories: {remembered if remembered else "No specific memories yet"}
+        Your memories: {remembered or "No specific memories yet"}
 
         Respond naturally and briefly, like in a real conversation. 
         Keep your response focused and engaging, about 2-3 sentences.
