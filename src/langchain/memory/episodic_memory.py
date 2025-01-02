@@ -33,7 +33,30 @@ class CoALAEpisodicMemory(BaseMemory, BaseModel):
 
     def __init__(self, **data):
         super().__init__(**data)
-        self._redis = redis.Redis.from_url(self.redis_url, decode_responses=True)
+        try:
+            self._redis = redis.Redis.from_url(self.redis_url, decode_responses=True)
+            # Test connection
+            self._redis.ping()
+        except (redis.ConnectionError, redis.ConnectionTimeoutError) as e:
+            raise RuntimeError(
+                f"Failed to connect to Redis at {self.redis_url}. "
+                "Please ensure Redis is running and accessible. "
+                f"Error: {str(e)}"
+            ) from e
+        except Exception as e:
+            raise RuntimeError(f"Unexpected error connecting to Redis: {str(e)}") from e
+
+    def _ensure_connection(self):
+        """Ensure Redis connection is alive."""
+        if not self._redis:
+            raise RuntimeError("Redis connection not initialized")
+        try:
+            self._redis.ping()
+        except (redis.ConnectionError, redis.ConnectionTimeoutError) as e:
+            raise RuntimeError(
+                "Lost connection to Redis. Please ensure Redis is running and accessible. "
+                f"Error: {str(e)}"
+            ) from e
 
     @property
     def memory_variables(self) -> List[str]:
@@ -42,14 +65,15 @@ class CoALAEpisodicMemory(BaseMemory, BaseModel):
 
     def save_context(self, inputs: Dict[str, Any], outputs: Dict[str, str]) -> None:
         """Save context from this conversation turn to memory."""
+        self._ensure_connection()
         # Create a new episode from the interaction
         episode = Episode(content={"inputs": inputs, "outputs": outputs})
-
         # Store in Redis
         self._store_episode(episode)
 
     def _store_episode(self, episode: Episode) -> None:
         """Store an episode in Redis."""
+        self._ensure_connection()
         key = f"{self.namespace}:{episode.id}"
         self._redis.set(key, episode.model_dump_json())
 
@@ -65,31 +89,28 @@ class CoALAEpisodicMemory(BaseMemory, BaseModel):
 
     def store_episode(self, content: Dict[str, Any], tags: List[str] = None) -> str:
         """Store a new episode in memory."""
+        self._ensure_connection()
         episode = Episode(content=content, tags=tags or [])
         self._store_episode(episode)
         return episode.id
 
     def get_episode(self, episode_id: str) -> Optional[Episode]:
         """Retrieve a specific episode by ID."""
+        self._ensure_connection()
         key = f"{self.namespace}:{episode_id}"
         data = self._redis.get(key)
         return Episode.model_validate_json(data) if data else None
 
     def get_recent_episodes(self, limit: int = 5) -> List[Episode]:
         """Get the most recent episodes."""
+        self._ensure_connection()
         # Get recent episode IDs from the sorted set
         episode_ids = self._redis.zrevrange(f"{self.namespace}:timeline", 0, limit - 1)
-
         return self._retrieve_full_episodes(episode_ids)
 
     def search_by_tags(self, tags: List[str], match_all: bool = True) -> List[Episode]:
-        """
-        Search episodes by tags.
-
-        Args:
-            tags: List of tags to search for
-            match_all: If True, episode must have all tags. If False, any tag matches.
-        """
+        """Search episodes by tags."""
+        self._ensure_connection()
         if not tags:
             return []
 
