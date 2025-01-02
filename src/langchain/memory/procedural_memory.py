@@ -349,9 +349,7 @@ class CoALAProceduralMemory(BaseMemory, BaseModel):
                     success = False
                     break
 
-            # Update success rate
-            name = metadata.get("name")
-            if name:
+            if name := metadata.get("name"):
                 current_rate = float(metadata.get("success_rate", 0.0))
                 exec_count = int(metadata.get("execution_count", 0))
                 new_rate = (current_rate * exec_count + (1.0 if success else 0.0)) / (
