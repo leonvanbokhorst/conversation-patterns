@@ -1,127 +1,100 @@
-# Topic Drift Detection in Conversation
+# 🧠 Conversational Patterns Lab
 
-[![Test](https://github.com/leonvanbokhorst/conversational-patts/actions/workflows/test.yml/badge.svg)](https://github.com/leonvanbokhorst/conversational-patts/actions/workflows/test.yml)
+> Where we teach AIs to be less awkward at parties!
 
-A PyTorch-based model for detecting topic drift in conversations using an efficient attention-based architecture.
+## 🔬 Experiments Overview
 
-## Overview
+This repo contains several experiments exploring different aspects of AI conversation:
 
-This project implements a neural network model that detects topic drift in conversations. It uses BAAI/bge-m3 embeddings and a streamlined attention mechanism to analyze conversation flow and identify when topics change.
+### 1. 🎭 Narrative Mind
 
-## Model Architecture
+- Virtual humans with evolving mental models
+- Memory systems that actually remember stuff (unlike that one time I forgot where I put my keys... while holding them)
+- Located in: `src/narrative_mind/`
 
-### Key Components:
-1. **Input Processing**:
-   - Input dimension: 1024 (BGE-M3 embeddings)
-   - Hidden dimension: 512
-   - Sequence length: 8 turns
+### 2. 🎯 Topic Drift
 
-2. **Attention Block**:
-   - Multi-head attention (4 heads)
-   - PreNorm layers with residual connections
-   - Dropout rate: 0.1
+- Neural networks that try to stay on topic (better than most humans at meetings)
+- Experiments with conversation flow and coherence
+- Located in: `src/topic_drift/`
 
-3. **Feed-Forward Network**:
-   - Two-layer MLP with GELU activation
-   - Hidden dimension: 512 -> 2048 -> 512
-   - Residual connections
+### 3. 🎨 Prompt Crafting
 
-4. **Output Layer**:
-   - Two-layer MLP: 512 -> 256 -> 1
-   - GELU activation
-   - Direct sigmoid output for [0,1] range
+- Making LLMs respond more naturally
+- Integration patterns for better conversations
+- Located in: `src/prompt_crafting/`
 
-## Installation
+### 4. 🎲 Response Variability
+
+- Making AI responses less repetitive and more human-like
+- Because nobody likes talking to a broken record
+- Located in: `src/response-variability/`
+
+### 5. 🤝 Conversational Patterns
+
+- Core patterns for natural dialogue
+- Located in: `src/conversational_patterns/`
+
+## 🚀 Quick Start
 
 ```bash
-python -m venv .venv
-source .venv/bin/activate  # On Windows: .venv\Scripts\activate
+# Clone this repo (you probably already did that, high five! ✋)
+git clone https://github.com/yourusername/conversational-patts
 
 # Install dependencies
-pip install -e .
+pip install -r requirements.txt
+
+# Run experiments
+# (Each directory has its own README with specific instructions)
 ```
 
-## Usage
+## 📚 Project Structure
 
-```python
-import torch
-from transformers import AutoModel, AutoTokenizer
-from huggingface_hub import hf_hub_download
-
-def load_model(repo_id: str = "leonvanbokhorst/topic-drift-detector"):
-    # Set device
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    
-    # Download latest model weights
-    model_path = hf_hub_download(
-        repo_id=repo_id,
-        filename="models/v20241226_112605/topic_drift_model.pt", #latest
-        force_download=True
-    )
-    
-    # Load checkpoint
-    checkpoint = torch.load(model_path, weights_only=True, map_location=device)
-    
-    # Create model
-    model = EnhancedTopicDriftDetector(
-        input_dim=1024,
-        hidden_dim=checkpoint['hyperparameters']['hidden_dim']
-    ).to(device)
-    
-    # Load state dict
-    model.load_state_dict(checkpoint['model_state_dict'])
-    return model, device
-
-# Load models
-device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-base_model = AutoModel.from_pretrained('BAAI/bge-m3').to(device)
-tokenizer = AutoTokenizer.from_pretrained('BAAI/bge-m3')
-model, _ = load_model()
-model.eval()
-
-# Example conversation
-conversation = [
-    "How was your weekend?",
-    "It was great! Went hiking.",
-    "Which trail did you take?",
-    "The mountain loop trail.",
-    "That's nice. By the way, did you watch the game?",
-    "Yes! What an amazing match!",
-    "The final score was incredible.",
-    "I couldn't believe that last-minute goal."
-]
-
-# Get embeddings
-with torch.no_grad():
-    inputs = tokenizer(conversation, padding=True, truncation=True, return_tensors='pt')
-    inputs = {k: v.to(device) for k, v in inputs.items()}
-    embeddings = base_model(**inputs).last_hidden_state.mean(dim=1)  # [8, 1024]
-    conversation_embeddings = embeddings.view(1, -1)
-    drift_score = model(conversation_embeddings)
-
-print(f"Topic drift score: {drift_score.item():.4f}")
-# Higher scores indicate more topic drift
+```
+src/
+├── narrative_mind/      # Virtual humans with memory
+├── topic_drift/         # Conversation flow experiments
+├── prompt_crafting/     # Natural language generation
+├── response-variability/# Response diversity studies
+└── conversational_patterns/ # Core dialogue patterns
 ```
 
-## Training Details
+## 🎯 Key Features
 
-- Dataset: 6400 conversations (5120 train, 640 val, 640 test)
-- Repository: [leonvanbokhorst/topic-drift-v2](https://huggingface.co/datasets/leonvanbokhorst/topic-drift-v2)
-- Window size: 8 turns
-- Batch size: 32
-- Learning rate: 0.0001
-- Early stopping patience: 15
-- Distribution regularization weight: 0.1
-- Target standard deviation: 0.2
-- Base embeddings: BAAI/bge-m3
+- Event-driven processing
+- Distributed computation support
+- Async LLM integration
+- Real-time conversation analysis
+- Memory persistence
+- Natural language understanding
 
-## Limitations
+## 🤓 Technical Stack
 
-- Works best with English conversations
-- Requires exactly 8 turns of conversation
-- Each turn should be between 1-512 tokens
-- Relies on BAAI/bge-m3 embeddings
+- Python (because we're civilized here)
+- PyTorch (for the neural magic)
+- Transformers (the AI kind, not the robots in disguise)
+- FastAPI (for speedy services)
+- Redis (because we remember things)
 
-## License
+## 📝 Code Standards
 
-MIT License
+We keep it clean and tidy:
+
+- Type hints (because guessing is for fortune tellers)
+- Documentation (future you will thank past you)
+- Tests (lots of them)
+- PEP 8 (because chaos is so 2010)
+
+## 🤝 Contributing
+
+Got ideas? Found a bug? Want to make AI conversations even better?
+
+1. Fork it
+2. Branch it
+3. Code it
+4. Test it
+5. PR it
+
+## 📜 License
+
+MIT - Because sharing is caring!
