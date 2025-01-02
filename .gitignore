@@ -23,6 +23,8 @@ wheels/
 cache/
 .DS_Store
 memories/
+semantic_memory/
+procedural_memory/
 
 # Testing
 .coverage

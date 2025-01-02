@@ -78,7 +78,7 @@ async def _shape_into_response(self, thoughts: str) -> str:
 
 ### Natural Attention Drift
 
-```
+```text
 User: "What do you think about neural networks?"
 
 Inner Story: "Been feeling a bit scattered today, mind jumping between ideas..."
@@ -95,7 +95,7 @@ Response: "You know, I've been thinking about brains actually...
 
 ### Energy Flow
 
-```
+```text
 User: "Could you explain quantum computing?"
 
 Inner Story: "Feeling kind of low energy after that long conversation earlier..."
