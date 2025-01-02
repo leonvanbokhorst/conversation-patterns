@@ -98,3 +98,152 @@ Got ideas? Found a bug? Want to make AI conversations even better?
 ## 📜 License
 
 MIT - Because sharing is caring!
+
+# Enhanced Virtual Human Memory System
+
+A sophisticated memory system that models human-like memory behaviors with emotional differentiation and narrative coherence. This system is designed to create more authentic and emotionally engaging interactions in virtual human simulations.
+
+## Features
+
+### 1. Emotional Differentiation
+
+- Rich emotional state modeling with primary and secondary emotions
+- Dynamic emotional intensity tracking
+- Emotional congruence in memory clusters
+- Emotion-based memory activation
+
+### 2. Thematic Coherence
+
+- Automatic narrative clustering
+- Dynamic connection strength adjustment
+- Thematic resonance between memories
+- Narrative gravity fields
+
+### 3. Memory Dynamics
+
+- Short-term to long-term memory consolidation
+- Novelty detection and attention boosting
+- Natural memory decay
+- Reinforcement through recall
+
+### 4. Visualization
+
+- Memory network visualization
+- Narrative cluster visualization
+- Emotional state visualization
+- Interactive graph exploration
+
+## Installation
+
+1. Clone the repository:
+
+```bash
+git clone [repository-url]
+cd [repository-name]
+```
+
+2. Install dependencies:
+
+```bash
+pip install -r requirements.txt
+```
+
+## Usage
+
+### Basic Usage
+
+```python
+from memory.enhanced_memory_system import EnhancedMemorySystem
+
+# Create a memory system
+memory_system = EnhancedMemorySystem()
+
+# Process a new experience
+memory_system.process_new_experience(
+    content="Had a great team meeting",
+    emotions={
+        "joy": 0.8,
+        "trust": 0.7,
+        "anticipation": 0.6
+    },
+    context={
+        "location": "Office",
+        "activity": "meeting",
+        "tags": ["work", "collaboration", "communication"]
+    }
+)
+```
+
+### Visualization
+
+```python
+from memory.memory_visualizer import MemoryVisualizer
+
+visualizer = MemoryVisualizer()
+
+# Visualize memory network
+visualizer.visualize_memory_network(
+    memory_system.long_term_storage,
+    save_path="memory_network.png"
+)
+
+# Visualize narrative clusters
+visualizer.visualize_narrative_clusters(
+    memory_system.narrative_clusters,
+    save_path="narrative_clusters.png"
+)
+```
+
+## Demo
+
+Run the demonstration script to see the system in action:
+
+```bash
+python src/memory/enhanced_memory_demo.py
+```
+
+The demo showcases:
+
+1. Emotional differentiation
+2. Thematic coherence
+3. Memory resonance
+4. Visualization capabilities
+
+## System Architecture
+
+### Components
+
+1. **EmotionalState**
+
+   - Manages primary and secondary emotions
+   - Tracks emotional intensity and duration
+   - Provides emotional energy calculations
+
+2. **MemoryNode**
+
+   - Stores content and context
+   - Maintains emotional state
+   - Tracks connections and activation
+
+3. **NarrativeCluster**
+
+   - Groups related memories
+   - Maintains thematic coherence
+   - Calculates cluster gravity
+
+4. **MemoryVisualizer**
+   - Creates network visualizations
+   - Visualizes narrative clusters
+   - Provides emotional state visualization
+
+## Contributing
+
+1. Fork the repository
+2. Create your feature branch (`git checkout -b feature/amazing-feature`)
+3. Commit your changes (`git commit -m 'Add amazing feature'`)
+4. Push to the branch (`git push origin feature/amazing-feature`)
+5. Open a Pull Request
+
+## License
+
+This project is licensed under the MIT License - see the LICENSE file for details.
