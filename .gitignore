@@ -52,7 +52,7 @@ models/
 *.pth
 *.ckpt
 *.png
-*.txt
+
 
 # Logs
 *.log
