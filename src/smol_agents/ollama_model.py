@@ -52,7 +52,7 @@ class OllamaModel:
             model=self.model_id,
             messages=converted_messages,
             options={
-                "temperature": 0.7,
+                "temperature": 0.5,
                 "stop": stop_sequences or [],
             },
         )
