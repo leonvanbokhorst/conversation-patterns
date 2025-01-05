@@ -1,12 +1,16 @@
 """
 Creative Writing Assistant using SmolagentS - A focused example of agent capabilities.
-Uses unsloth's optimized Llama-3.2-3B-Instruct for efficient local processing.
+Uses hermes3 - good at following structured prompts
 
 This is a multi-step agent that builds stories iteratively, using code-based actions
 for better composability and clearer intent.
 """
 
 from typing import Dict, List, TYPE_CHECKING, Optional, Any
+from datetime import datetime
+import json
+import os
+from pathlib import Path
 from smolagents import CodeAgent, tool, TOOL_CALLING_SYSTEM_PROMPT
 from smol_agents.ollama_model import OllamaModel
 
@@ -16,79 +20,61 @@ if TYPE_CHECKING:
 
 class CreativeWriterAgent(CodeAgent):
     def __init__(self):
-        # Initialize the model
-        model = OllamaModel(model_id="hermes3:latest")
+        model = OllamaModel(model_id="hf.co/bartowski/Qwen2.5-7B-Instruct-GGUF:Q5_K_S")
 
         # Store instance for static methods
         CreativeWriterAgent._instance = self
 
-        # Initialize story memory
+        # Initialize story memory with validation
         self.story_elements = {
             "plot": [],
             "characters": [],
             "settings": [],
             "theme": None,
             "status": "planning",
+            "version": 1,  # Track state changes
         }
 
-        # Create custom system prompt
-        custom_prompt = """You are a creative writing assistant that helps create stories through code.
+        # Initialize history tracking with metadata
+        self.history = {
+            "session_start": datetime.now().isoformat(),
+            "steps": [],
+            "final_story": None,
+            "metadata": {
+                "model": model.model_id,
+                "version": "1.0",
+            },
+        }
+
+        # Create output directory if it doesn't exist
+        self.output_dir = Path("story_outputs")
+        self.output_dir.mkdir(exist_ok=True)
+
+        # Create minimal but effective system prompt with stronger guidance
+        custom_prompt = """You are a creative writing assistant that uses code tools to build stories step by step.
 
 {{managed_agents_descriptions}}
 
-Allowed imports:
 {{authorized_imports}}
 
-Available tools:
-- set_theme(theme: str) -> str
-  Set the main theme for the story
+{{tool_descriptions}}
 
-- add_character(name: str, description: str, role: str = "supporting") -> str
-  Add a character with more structured information
+CRITICAL: You MUST use the provided tools to build the story. DO NOT generate story text directly.
+Instead, use tools to:
+1. Set theme first
+2. Add characters
+3. Add settings
+4. Add plot points
+5. Update status
 
-- add_plot_point(description: str, position: str = "next", type: str = "event") -> str
-  Add a plot point with better structure for story progression
+ALWAYS and ONLY respond in this format:
 
-- add_setting(location: str, description: str, time_period: str = "present") -> str
-  Add a setting with temporal context
-
-- get_story_summary(format: str = "full") -> Dict
-  Get a structured summary of the story elements
-
-- update_story_status(status: str) -> str
-  Update the story's development status
-
-IMPORTANT: You must ALWAYS respond in this EXACT format:
-
-Thought: [Your reasoning about what to do next]
+Thought: [Your next step using tools]
 
 Code:
 ```py
-# Your code here using the tools above
-```
-
-After each action, I will provide a brief explanation of what was done and what should happen next.
-
-Example interaction:
-Thought: Let's set up our story's theme about time travel and introduce our main character.
-
-Code:
-```py
-# Set theme
-set_theme("Time travel and its consequences")
-# Add main character
-add_character(
-    name="Dr. Sarah Chen",
-    description="Brilliant archaeologist obsessed with ancient mysteries",
-    role="protagonist"
-)
-```
-
-Remember:
-1. ALWAYS include both 'Thought:' and 'Code:' sections
-2. ALWAYS wrap code in ```py and ``` tags
-3. ALWAYS use the exact tools as shown above
-4. NEVER add extra text between the code block markers"""
+[Your code here]
+```"""
 
         # Initialize with instance methods as tools
         super().__init__(
@@ -103,6 +89,7 @@ Remember:
             ],
             add_base_tools=True,
             system_prompt=custom_prompt,
+            max_iterations=15,
         )
 
     @tool
@@ -136,11 +123,26 @@ Remember:
         Returns:
             str: A confirmation message
         """
+        # Validate role
+        valid_roles = ["protagonist", "antagonist", "supporting"]
+        role = role or "supporting"
+        if role not in valid_roles:
+            return f"Invalid role. Choose from: {valid_roles}"
+
+        # Check for duplicate names
+        existing_names = {
+            c["name"]
+            for c in CreativeWriterAgent._instance.story_elements["characters"]
+        }
+        if name in existing_names:
+            return f"Character {name} already exists"
+
         character = {
             "name": name,
             "description": description,
-            "role": role or "supporting",
+            "role": role,
             "relationships": [],
+            "added_at": datetime.now().isoformat(),
         }
         CreativeWriterAgent._instance.story_elements["characters"].append(character)
         return f"Added character: {name} ({role})"
@@ -162,14 +164,36 @@ Remember:
         Returns:
             str: A confirmation message
         """
+        # Validate position and type
+        valid_positions = ["beginning", "next", "climax", "end"]
+        valid_types = ["event", "twist", "resolution"]
+
+        position = position or "next"
+        type = type or "event"
+
+        if position not in valid_positions:
+            return f"Invalid position. Choose from: {valid_positions}"
+        if type not in valid_types:
+            return f"Invalid type. Choose from: {valid_types}"
+
+        # Extract character names from description
+        character_names = {
+            c["name"]
+            for c in CreativeWriterAgent._instance.story_elements["characters"]
+        }
+        connected_characters = [
+            name for name in character_names if name.lower() in description.lower()
+        ]
+
         plot_point = {
             "description": description,
-            "position": position or "next",
-            "type": type or "event",
-            "connected_characters": [],
+            "position": position,
+            "type": type,
+            "connected_characters": connected_characters,
+            "added_at": datetime.now().isoformat(),
         }
         CreativeWriterAgent._instance.story_elements["plot"].append(plot_point)
-        return f"Added {type} plot point: {description}"
+        return f"Added {type} plot point at {position}: {description}"
 
     @tool
     @staticmethod
@@ -188,11 +212,20 @@ Remember:
         Returns:
             str: A confirmation message
         """
+        # Check for duplicate locations
+        existing_locations = {
+            s["location"]
+            for s in CreativeWriterAgent._instance.story_elements["settings"]
+        }
+        if location in existing_locations:
+            return f"Setting {location} already exists"
+
         setting = {
             "location": location,
             "description": description,
             "time_period": time_period or "present",
             "connected_events": [],
+            "added_at": datetime.now().isoformat(),
         }
         CreativeWriterAgent._instance.story_elements["settings"].append(setting)
         return f"Added setting: {location} ({time_period})"
@@ -242,8 +275,20 @@ Remember:
         CreativeWriterAgent._instance.story_elements["status"] = status
         return f"Story status updated to: {status}"
 
+    def validate_state(self) -> None:
+        """Validate story state consistency."""
+        # Ensure all characters referenced in plot points exist
+        character_names = {c["name"] for c in self.story_elements["characters"]}
+        for plot_point in self.story_elements["plot"]:
+            for char in plot_point.get("connected_characters", []):
+                if char not in character_names:
+                    plot_point["connected_characters"].remove(char)
+
+        # Increment version
+        self.story_elements["version"] += 1
+
     def run(self, prompt: str) -> str:
-        """Run the agent with the given prompt.
+        """Run the agent with the given prompt and track history with validation.
 
         Args:
             prompt: The prompt to run with
@@ -251,18 +296,61 @@ Remember:
         Returns:
             str: The agent's response
         """
-        return super().run(prompt)
+        # Track the step
+        step = {
+            "timestamp": datetime.now().isoformat(),
+            "prompt": prompt,
+            "story_state": self.get_story_summary(format="full"),
+            "state_version": self.story_elements["version"],
+        }
+
+        # Run the agent
+        response = super().run(prompt)
+
+        # Validate state
+        self.validate_state()
+
+        # Update step with response and validated state
+        step["response"] = response
+        step["story_state_after"] = self.get_story_summary(format="full")
+        step["state_version_after"] = self.story_elements["version"]
+        self.history["steps"].append(step)
+
+        # Save after each step
+        self.save_history()
+
+        return response
+
+    def save_history(self) -> None:
+        """Save the current history to a JSON file."""
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename = self.output_dir / f"story_history_{timestamp}.json"
+
+        with open(filename, "w") as f:
+            json.dump(self.history, f, indent=2)
+
+    def get_history(self) -> Dict:
+        """Get the current history.
+
+        Returns:
+            Dict: The complete history of the story creation process
+        """
+        return self.history
 
 
 if __name__ == "__main__":
     # Initialize the agent
     writer = CreativeWriterAgent()
 
-    # Example interaction showing multi-step story development
+    # Example interaction showing structured story development
     prompts = [
-        "Let's write a story about a time-traveling researcher. Start by setting the theme and main character.",
-        "Now add a mysterious setting where they make their first discovery.",
-        "What happens in the first major plot point?",
+        "Create a story about friendship and growth",
+        "Add a key character to the story",
+        "Add an interesting setting for the story",
+        "Create the first major plot point",
+        "Add another character who changes the story",
+        "Create the climactic moment",
+        "Wrap up the story with a resolution",
     ]
 
     for prompt in prompts:
