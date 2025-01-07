@@ -7,13 +7,13 @@ def run_story_generation():
     agent = CodeAgent(
         tools=[DuckDuckGoSearchTool()],
         model=model,
-        #additional_authorized_imports=["requests", "random"],
-        planning_interval=1,
-        max_iterations=5,
+        additional_authorized_imports=["math"],
+        planning_interval=3,
+        max_iterations=20,
     )
 
     result = agent.run(
-        """Find a way to escape from the matrix."""
+        """How many apples go in a tiny bushel?"""
     )
 
     print("\nFinal Story:")
